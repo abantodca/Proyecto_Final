@@ -18,7 +18,10 @@
 ## Tabla de Contenidos
 
 1. [Resumen Ejecutivo](#1-resumen-ejecutivo)
-2. [Matriz de Cumplimiento de Requerimientos](#2-matriz-de-cumplimiento-de-requerimientos)
+   - 1.1 [Contexto de Negocio — DSRPMart](#11-contexto-de-negocio--dsrpmart)
+   - 1.2 [¿Por Qué Machine Learning para una Aplicación de Ventas?](#12-por-qué-machine-learning-para-una-aplicación-de-ventas)
+   - 1.3 [Propuesta de Solución](#13-propuesta-de-solución)
+2. [Matriz de Cumplimiento — Alcance de la Propuesta](#2-matriz-de-cumplimiento--alcance-de-la-propuesta)
 3. [Nivel de Madurez MLOps](#3-nivel-de-madurez-mlops)
 4. [Caso 1 – Productos Recomendados](#4-caso-1--productos-recomendados)
 5. [Caso 2 – Motor de Búsqueda](#5-caso-2--motor-de-búsqueda)
@@ -34,37 +37,70 @@
 
 ## 1. Resumen Ejecutivo
 
-DSRPMart es una startup de marketplace que necesita integrar predicciones de Machine Learning en múltiples componentes de su UI. Como consultores MLOps, proponemos una arquitectura **MLOps Nivel 2** (CT – Continuous Training) sobre **AWS con Kubernetes (EKS)** que garantiza:
+### 1.1 Contexto de Negocio — DSRPMart
 
-- **Reproducibilidad** completa de experimentos y pipelines
-- **Automatización** CI/CD desde el commit hasta producción
-- **Escalabilidad** horizontal nativa con Kubernetes
-- **Monitoreo** continuo de data drift, model performance y SLAs de negocio
-- **Time-to-production** reducido para que los Data Scientists iteren rápidamente
+**DSRPMart** es una startup de marketplace digital en Latinoamérica que conecta vendedores (sellers) con compradores a través de una aplicación móvil y web. El modelo de negocio se basa en comisiones por transacción, publicidad interna (productos sponsoreados) y suscripciones premium para sellers.
 
-Los dos casos seleccionados representan los extremos del espectro de frecuencia:
+| Indicador de Negocio | Situación Actual | Desafío |
+|---|---|---|
+| **Catálogo** | ~500K productos activos de miles de sellers | Los usuarios no encuentran lo que necesitan entre la oferta masiva |
+| **Usuarios** | ~10M usuarios registrados, ~2M activos mensuales | Baja conversión: los usuarios ven muchos productos pero compran pocos |
+| **Tasa de conversión** | ~1.8% (benchmark e-commerce Latam: 2.5-3.5%) | Brecha significativa frente a competidores con ML maduros |
+| **Búsquedas sin resultado** | ~8% de las consultas | Pérdida directa de ventas y frustración del usuario |
+| **Ticket promedio** | $35 USD | Oportunidad de aumentar con cross-sell y recomendaciones relevantes |
+| **Tiempo en app** | 4.2 min por sesión | Inferior al benchmark de apps con personalización ML (6-8 min) |
 
-- **Productos Recomendados**: entrenamiento diario, inferencia batch cada 4-6 horas
-- **Motor de Búsqueda**: indexación batch + retrieval en tiempo real (< 100ms)
+**El problema fundamental:** DSRPMart tiene un catálogo amplio y una base de usuarios en crecimiento, pero **carece de inteligencia artificial para conectar al usuario correcto con el producto correcto en el momento correcto**. Esto se traduce en baja conversión, baja retención y pérdida de revenue frente a competidores que ya incorporan ML (Mercado Libre, Amazon, Falabella).
 
-Ambos comparten infraestructura, pipelines CI/CD y monitoring, maximizando la reutilización y reduciendo costos operativos.
+### 1.2 ¿Por Qué Machine Learning para una Aplicación de Ventas?
+
+La propuesta de incorporar ML/IA no es un ejercicio tecnológico sino una **necesidad competitiva con impacto directo en los ingresos**:
+
+| Problema de Negocio | Solución con ML/IA | Impacto Esperado en Ventas |
+|---|---|---|
+| Usuario no encuentra productos relevantes entre 500K SKUs | **Recomendaciones personalizadas** (Two-Tower NN + LambdaRank) que aprenden del comportamiento de cada usuario | +15-25% CTR en sección "Para Ti" → +8% Revenue per Session |
+| Búsqueda devuelve resultados irrelevantes o vacíos | **Motor de Búsqueda inteligente** (Sentence-BERT + LightGBM Ranking) con comprensión semántica | -60% zero-result rate → +10% Search Conversion |
+| Recomendaciones estáticas ("más vendidos") para todos | Rankings personalizados actualizados 4x/día por usuario | +12% Tiempo en App → mayor engagement y retención |
+| Sin capacidad de medir impacto de cambios | **A/B Testing automatizado** con métricas de negocio (CTR, conversion, revenue) | Decisiones data-driven, no por intuición |
+| Modelos manuales que se degradan con el tiempo | **MLOps automatizado** con detección de drift y reentrenamiento continuo | Modelos siempre actualizados → revenue sostenido |
+
+> **ROI Estimado:** Basado en benchmarks de la industria (McKinsey, 2023: *"personalization increases revenue 10-15%"*), proyectamos que la inversión en ML generará un incremento de **10-15% en GMV (Gross Merchandise Value)** en los primeros 12 meses post-implementación, con un payback period de 6-8 meses considerando los costos de infraestructura AWS y equipo.
+
+### 1.3 Propuesta de Solución
+
+Como consultores MLOps, proponemos implementar una plataforma de **Machine Learning en producción** sobre **AWS con Kubernetes (EKS)**, con nivel de madurez **MLOps Nivel 2** (Continuous Training + CI/CD), que resuelva los dos casos de uso con mayor impacto en ventas:
+
+| Caso de Uso | Qué resuelve | Frecuencia | Impacto en ventas |
+|---|---|---|---|
+| **Productos Recomendados** | "¿Qué productos le interesan a ESTE usuario?" | Batch 4x/día + serving < 5ms | Aumento de conversión y ticket promedio |
+| **Motor de Búsqueda Inteligente** | "¿Qué productos coinciden con ESTA búsqueda?" | Indexación batch + serving < 100ms | Reducción de búsquedas sin resultado → más ventas |
+
+La arquitectura propuesta garantiza:
+
+- **Impacto en ventas medible** mediante A/B testing riguroso con KPIs de negocio (CTR, conversión, revenue)
+- **Automatización CI/CD** completa desde el commit hasta producción, con rollback automático
+- **Modelos siempre actualizados** gracias a Continuous Training activado por data drift
+- **Escalabilidad** horizontal para soportar el crecimiento de usuarios y catálogo
+- **Costos optimizados** con Spot Instances (~70% ahorro) y arquitectura serverless donde corresponda
+
+Ambos casos comparten infraestructura, pipelines CI/CD y monitoring, maximizando la reutilización y reduciendo costos operativos.
 
 ---
 
-## 2. Matriz de Cumplimiento de Requerimientos
+## 2. Matriz de Cumplimiento — Alcance de la Propuesta
 
-La siguiente tabla mapea explícitamente cada requerimiento del proyecto con la sección del documento que lo desarrolla, asegurando **completitud y trazabilidad** para la evaluación.
+La siguiente tabla define el alcance de esta propuesta, mapeando cada componente crítico de la solución ML con la sección del documento que lo desarrolla. Esto permite evaluar la **completitud y viabilidad técnica** de la propuesta antes de su implementación.
 
-| # | Requerimiento del Proyecto | Sección(es) que lo resuelven | Entregables concretos |
+| # | Componente de la Propuesta | Sección(es) donde se desarrolla | Entregables concretos |
 |---|---|---|---|
-| **1** | Flujo E2E para cada caso de uso: algoritmos, fuentes de datos, optimizaciones, Model Card, Diccionario de Datos, Métricas de Negocio | §4 (Caso 1: §4.2–§4.6) y §5 (Caso 2: §5.2–§5.6) | Diagrama E2E, tabla de algoritmos con justificación, Model Card completa, catálogo de fuentes, KPIs de negocio |
-| **2** | Tipo de Solución: batch, real-time o streaming con argumentación | §6 | Tabla comparativa por criterio, argumentación de descarte de alternativas |
-| **3** | Stack Tecnológico: version control, cloud, IaC, model management, orquestación, librerías, CI/CD, métricas/monitoring, adicionales | §7 (§7.a–§7.h) + **§7.i Análisis Comparativo** | Tabla por categoría, config YAML, código Python, **matriz de decisión con alternativas evaluadas** |
-| **4** | Estrategia de despliegue: shadow, backtest, champion-challenger, A/B test con diagrama de proceso | §8 | Diagrama de 5 fases, flujo Champion/Challenger → Shadow → A/B, criterios estadísticos |
-| **5** | Pasos de construcción: desarrollos, actores/equipos, colaboración | §9 | Roadmap por Sprint (16 sem/caso), organigrama, modelo de colaboración Scrum adaptado |
-| **6** | Diagramas de arquitectura: E2E training, arquitectura de solución, CI/CD de despliegue de modelo | §10 (§10.a–§10.c) | 3 diagramas de texto detallados: Pipeline E2E, Arquitectura AWS completa, CI/CD GitOps |
+| **1** | Flujo E2E para cada caso de uso: algoritmos, fuentes de datos, optimizaciones, Model Card, Diccionario de Datos, Métricas de Negocio | §4 (Recomendaciones: §4.2–§4.6) y §5 (Búsqueda: §5.2–§5.6) | Diagrama E2E, tabla de algoritmos con justificación, Model Card completa, catálogo de fuentes, KPIs de negocio vinculados a ventas |
+| **2** | Tipo de Solución: batch, real-time o streaming con argumentación de negocio | §6 | Tabla comparativa por criterio, argumentación de descarte de alternativas, impacto en UX y costos |
+| **3** | Stack Tecnológico AWS cloud-native: version control, IaC, model management, orquestación, CI/CD, monitoring | §7 (§7.a–§7.h) + **§7.i Análisis Comparativo** | Tabla por categoría, código ejemplo, **6 matrices de decisión con alternativas evaluadas** |
+| **4** | Estrategia de despliegue con validación de impacto en ventas: shadow, A/B test, champion-challenger | §8 | Flujo 5 fases, criterios estadísticos, métricas de negocio como gate de promoción |
+| **5** | Plan de construcción: sprints, actores, colaboración entre equipos | §9 | Roadmap 16 sem/caso, organigrama 11 personas, modelo Scrum adaptado a ML |
+| **6** | Diagramas de arquitectura: E2E training, arquitectura AWS, CI/CD de despliegue | §10 (§10.a–§10.c) | 3 diagramas Mermaid detallados: Pipeline E2E, Arquitectura AWS completa, CI/CD GitOps |
 
-> **Nota sobre la evaluación:** La estructura del documento sigue el orden lógico de los 6 requerimientos. Cada caso de uso (§4 y §5) incluye su propio flujo E2E, algoritmos, Model Card, diccionario de datos y métricas de negocio como se solicita en el requerimiento 1. Los requerimientos 2–6 aplican de forma transversal a ambos casos.
+> **Principio rector de la propuesta:** Cada decisión técnica está justificada por su impacto en las métricas de negocio de DSRPMart (conversión, revenue, retención). La tecnología es un medio, no un fin. La estructura del documento sigue el orden lógico: primero el POR QUÉ (contexto de negocio), luego el QUÉ (casos de uso) y finalmente el CÓMO (stack, CI/CD, deployment).
 
 ---
 
@@ -129,7 +165,9 @@ flowchart LR
 
 ### 4.1 Descripción del Problema
 
-Generar un **ranking personalizado de productos TOP-20** para cada usuario activo, actualizado varias veces al día basado en la interacción del usuario con la aplicación (clicks, vistas, compras, tiempo en página, búsquedas).
+Cuando un usuario abre la app de DSRPMart, actualmente ve una lista genérica de "productos populares" idéntica para todos los usuarios. Esto ignora que cada persona tiene intereses distintos basados en su historial de navegación, compras y búsquedas. El resultado: **baja tasa de click (<5% CTR)** en la sección de inicio y **pérdida de oportunidades de venta** por no mostrar productos relevantes.
+
+La solución propuesta genera un **ranking personalizado de productos TOP-20** para cada usuario activo, actualizado 4 veces al día basado en la interacción del usuario con la aplicación (clicks, vistas, compras, tiempo en página, búsquedas). Esto transforma la experiencia de "una tienda igual para todos" a "una tienda personalizada para cada usuario".
 
 ### 4.2 Flujo End-to-End
 
@@ -452,7 +490,13 @@ flowchart LR
 
 ### 5.1 Descripción del Problema
 
-Conectar la **query/consulta del usuario** con los **TOP-K productos más relevantes** del catálogo, similar al proyecto DSRPflix. Requiere comprensión semántica de la query, matching con el inventario y ranking personalizado por usuario.
+En una aplicación de ventas con catálogo masivo (+500K productos), la **búsqueda es el principal canal de conversión**: los usuarios que buscan tienen una intención de compra clara. El problema actual es que el motor de búsqueda de DSRPMart utiliza únicamente matching lexical (palabras exactas), lo que resulta en:
+
+- **~8% de búsquedas sin resultado** (el usuario escribe "celular barato" pero el producto se llama "smartphone económico")
+- **Baja relevancia**: resultados ordenados por fecha de publicación, no por relevancia para el usuario
+- **Sin personalización**: todos los usuarios ven los mismos resultados para la misma query
+
+La solución propuesta conecta la **query/consulta del usuario** con los **TOP-K productos más relevantes** del catálogo usando **comprensión semántica** (el modelo entiende que "celular" ≈ "smartphone") y **ranking personalizado** por usuario.
 
 ### 5.2 Flujo End-to-End
 
@@ -743,6 +787,8 @@ flowchart LR
 
 ## 6. Tipo de Solución
 
+> **Decisión clave de negocio:** La elección entre batch, real-time y streaming no es solo técnica — impacta directamente la experiencia de compra del usuario y, por tanto, la tasa de conversión. Para DSRPMart, la pregunta no es "¿qué es más moderno?" sino "¿qué patrón maximiza ventas al menor costo operativo?". A continuación, cada caso de uso se analiza desde la perspectiva del comportamiento del comprador y su expectativa de latencia.
+
 ### 6.1 Productos Recomendados → **Batch (Mini-Batch Frecuente)**
 
 | Criterio | Análisis | Decisión |
@@ -775,9 +821,13 @@ flowchart LR
 
 El Motor de Búsqueda es inherentemente **híbrido**: la indexación es batch pero el serving es real-time. La capa de ranking en query-time es un modelo ligero (LightGBM predict < 5ms para 150 candidatos) que se puede ejecutar por request sin problema.
 
+**Impacto en ventas:** Una búsqueda que responde en < 100ms y muestra resultados relevantes reduce la tasa de abandono y aumenta el *add-to-cart rate*. El 8% de búsquedas con cero resultados representa carritos perdidos que esta arquitectura híbrida busca eliminar.
+
 ---
 
 ## 7. Stack Tecnológico AWS Cloud-Native
+
+> **Principio de diseño:** Cada herramienta del stack fue seleccionada por su capacidad de **impactar las métricas de ventas** de DSRPMart (conversión, latencia de búsqueda, frescura de recomendaciones), no solo por méritos técnicos. AWS fue elegido como proveedor único para mantener la coherencia operacional y aprovechar el ecosistema de datos más maduro del mercado, con el mayor pool de talento certificado en Latinoamérica.
 
 ### 7.a Control de Versiones de Código
 
@@ -1200,6 +1250,8 @@ flowchart TD
 
 ## 8. Estrategia de Despliegue de Modelos
 
+> **Principio de negocio:** Un modelo de ML solo genera valor cuando está en producción y los usuarios interactúan con él. Sin embargo, un despliegue prematuro puede degradar la experiencia de compra y reducir la conversión. La estrategia Champion/Challenger protege los ingresos actuales (champion) mientras valida que el nuevo modelo (challenger) realmente mejore las ventas antes de exponerlo al 100% del tráfico. Cada fase tiene criterios de decisión en métricas de negocio: CTR, tasa de conversión y revenue por sesión.
+
 ### 8.1 Estrategia: **Champion/Challenger + Shadow Mode → A/B Test**
 
 #### Diagrama Mermaid – Flujo de Despliegue de Modelo
@@ -1347,6 +1399,8 @@ flowchart TD
 ---
 
 ## 9. Pasos de Construcción, Actores y Colaboración
+
+> **Enfoque de ejecución:** El plan de construcción sigue un modelo incremental orientado a generar valor de negocio lo antes posible. Cada caso de uso se desarrolla en ~16 semanas con un Sprint 0 de *discovery* donde Product Owner y ML Lead definen los KPIs objetivo de ventas que justifican la inversión. El rollout con A/B test al final de cada plan garantiza que solo se promueven modelos que demuestren mejora medible en conversión o revenue.
 
 ### 9.1 Plan de Construcción – Caso 1: Productos Recomendados
 
@@ -1749,6 +1803,8 @@ flowchart TD
 ---
 
 ## 11. Monitoreo, Data Drift y Observabilidad
+
+> **Conexión con el negocio:** En una aplicación de ventas, un modelo de recomendación o búsqueda que se degrada silenciosamente impacta directamente los ingresos. Si el comportamiento de compra cambia (nuevas tendencias, estacionalidad, cambio de catálogo) y el modelo no se adapta, la conversión cae sin que el equipo lo detecte a tiempo. El monitoreo continuo de drift y métricas de negocio cierra el ciclo ML → revenue, asegurando que los modelos mantengan su impacto en ventas.
 
 #### Diagrama Mermaid – Loop de Monitoreo y Reentrenamiento Automático
 
