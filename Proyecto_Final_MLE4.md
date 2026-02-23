@@ -4,6 +4,7 @@
 **Fecha:** Febrero 2026  
 **Cliente:** DSRPMart – Startup Marketplace  
 **Casos de Uso Seleccionados:**  
+
 1. Productos Recomendados (ranking por interacción, varias veces al día)  
 2. Motor de Búsqueda (TOP-K productos por query del usuario)
 
@@ -42,6 +43,7 @@ DSRPMart es una startup de marketplace que necesita integrar predicciones de Mac
 - **Time-to-production** reducido para que los Data Scientists iteren rápidamente
 
 Los dos casos seleccionados representan los extremos del espectro de frecuencia:
+
 - **Productos Recomendados**: entrenamiento diario, inferencia batch cada 4-6 horas
 - **Motor de Búsqueda**: indexación batch + retrieval en tiempo real (< 100ms)
 
@@ -131,101 +133,140 @@ Generar un **ranking personalizado de productos TOP-20** para cada usuario activ
 
 ### 4.2 Flujo End-to-End
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                   FLUJO E2E – PRODUCTOS RECOMENDADOS                    │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  FUENTES DE DATOS                                                       │
-│  ─────────────────                                                      │
-│  [A] Amazon Kinesis Data Streams ← App Events (clicks, views, cart)     │
-│      └── Kinesis Firehose → S3 (raw/events/) cada 5 min                │
-│  [B] Amazon RDS (PostgreSQL) ← Catálogo de productos (CDC)             │
-│      └── AWS DMS → S3 (raw/catalog/) CDC incremental                   │
-│  [C] Amazon Redshift (DWH) ← Historial de compras/transacciones        │
-│      └── UNLOAD → S3 (raw/transactions/) diario                        │
-│  [D] Amazon ElastiCache Redis ← Sesión activa (features real-time)      │
-│                                                                         │
-│  PIPELINE DE ENTRENAMIENTO (Airflow MWAA → Kubeflow en EKS)            │
-│  ──────────────────────────────────────────────────────────             │
-│                                                                         │
-│  [1] DATA INGESTION (Airflow Task)                                      │
-│      ├── Lee: S3 raw/ (events, catalog, transactions)                   │
-│      ├── Valida: Great Expectations (schema, nulls, ranges, freshness)  │
-│      ├── Output: S3 validated/ (Parquet particionado por fecha)         │
-│      └── Alerta: SNS → Slack si validación falla                       │
-│           │                                                             │
-│           ▼                                                             │
-│  [2] FEATURE ENGINEERING (Kubeflow Component → Spark on EKS)            │
-│      ├── User Features:                                                 │
-│      │   ├── CTR por categoría (últimos 7/14/30 días)                   │
-│      │   ├── Frecuencia de compra, ticket promedio, RFM score           │
-│      │   ├── Session embedding (avg de item embeddings de sesión)       │
-│      │   └── Hora del día, día de semana (features cíclicas sin/cos)   │
-│      ├── Item Features:                                                 │
-│      │   ├── Embedding Item2Vec (Word2Vec sobre secuencias de sesión)  │
-│      │   ├── Popularidad (views, compras, add-to-cart últimas 24h)     │
-│      │   ├── Precio, categoría L1/L2/L3, stock, margen                │
-│      │   └── Freshness score (días desde publicación)                   │
-│      ├── Cross Features:                                                │
-│      │   ├── User×Category affinity matrix                              │
-│      │   └── Cosine similarity (user_emb, item_emb)                    │
-│      ├── Output: Feast Feature Store (offline → S3, online → Redis)     │
-│      └── DVC: versiona dataset resultante en S3                        │
-│           │                                                             │
-│           ▼                                                             │
-│  [3] MODEL TRAINING (Kubeflow Pipeline → Pod EKS con GPU p3.2xlarge)   │
-│      ├── Stage A – Retrieval (Candidate Generation)                     │
-│      │   └── Two-Tower Neural Network (TensorFlow)                      │
-│      │       ├── User Tower: Dense(256)→Dense(128)→Dense(64)           │
-│      │       ├── Item Tower: Dense(256)→Dense(128)→Dense(64)           │
-│      │       ├── Loss: In-batch sampled softmax                         │
-│      │       ├── Output: user_embedding + item_embedding (dim 64)       │
-│      │       └── ANN Index: FAISS / Amazon OpenSearch KNN               │
-│      ├── Stage B – Ranking                                              │
-│      │   └── LightGBM LambdaRank                                       │
-│      │       ├── Features: user+item+cross+retrieval_score              │
-│      │       ├── Optimiza: NDCG@10 directamente                        │
-│      │       └── Hyperparams: Optuna (Bayesian) 50 trials              │
-│      ├── Stage C – Re-Ranking (diversidad)                              │
-│      │   └── MMR (Maximal Marginal Relevance)                           │
-│      │       └── λ=0.7 (relevance vs diversity trade-off)              │
-│      ├── MLflow: log_params, log_metrics, log_artifact                  │
-│      └── Tracking: experiment=product_recommender, run tagged con SHA   │
-│           │                                                             │
-│           ▼                                                             │
-│  [4] MODEL EVALUATION (Kubeflow Component)                              │
-│      ├── Métricas offline vs. Champion actual:                          │
-│      │   ├── NDCG@10, NDCG@20                                          │
-│      │   ├── Hit Rate@10, MAP@10                                        │
-│      │   ├── MRR (Mean Reciprocal Rank)                                 │
-│      │   └── Catalog Coverage (% de items únicos recomendados)          │
-│      ├── Data Drift Check (Evidently AI):                               │
-│      │   ├── PSI (Population Stability Index) por feature               │
-│      │   ├── KS Test distribución de scores                             │
-│      │   └── Target drift (distribución de clicks/compras)             │
-│      ├── Decision Gate automático:                                      │
-│      │   └── IF NDCG@10 > champion - 0.02 AND PSI < 0.25 → PASS       │
-│      └── Output: Evidently HTML report → S3 + MLflow artifact          │
-│           │                                                             │
-│           ▼                                                             │
-│  [5] MODEL REGISTRATION (Kubeflow Component)                            │
-│      ├── MLflow Model Registry: create_model_version()                  │
-│      ├── Stage: "Staging"                                               │
-│      ├── Tags: git_sha, dataset_version (DVC), training_date            │
-│      ├── Artifact: TF SavedModel + LightGBM .pkl → S3 artifact store   │
-│      └── Notificación: SNS → Slack #ml-models                          │
-│           │                                                             │
-│           ▼                                                             │
-│  [6] BATCH INFERENCE (Spark on EKS · Airflow scheduled 4x/día)         │
-│      ├── Lee modelo desde MLflow (stage="Production")                   │
-│      ├── Lee features desde Feast offline + online                      │
-│      ├── Genera TOP-20 ranking por cada usuario activo                  │
-│      ├── Output Redis (ElastiCache): key=user:{id}:recs TTL=6h         │
-│      ├── Output S3 + Redshift: predictions/ (auditoría y analytics)     │
-│      └── Métricas: cobertura, tiempo ejecución, p50/p99 latencia batch │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '11px', 'fontFamily': 'Segoe UI, Arial', 'lineColor': '#64748b'}}}%%
+flowchart TD
+
+    %% ── Class definitions ──
+    classDef aws fill:#FF9900,stroke:#232F3E,color:#232F3E,rx:6
+    classDef data fill:#3B82F6,stroke:#1E40AF,color:#fff,rx:6
+    classDef model fill:#8B5CF6,stroke:#5B21B6,color:#fff,rx:6
+    classDef tool fill:#10B981,stroke:#047857,color:#fff,rx:6
+    classDef gate fill:#EF4444,stroke:#991B1B,color:#fff,rx:6
+    classDef serve fill:#F59E0B,stroke:#92400E,color:#232F3E,rx:6
+    classDef store fill:#06B6D4,stroke:#0E7490,color:#fff,rx:6
+
+    %% ═══════════════════════════════════════════════════════════
+    %% FUENTES DE DATOS
+    %% ═══════════════════════════════════════════════════════════
+    subgraph FUENTES["<b>FUENTES DE DATOS</b>"]
+        direction LR
+        A["<b>Kinesis Data Streams</b><br/>App events — clicks, views, cart"]:::aws
+        A1["<b>Kinesis Firehose</b><br/>→ S3 raw/events/ cada 5 min"]:::aws
+        B["<b>RDS PostgreSQL</b><br/>Catálogo productos · CDC"]:::aws
+        B1["<b>AWS DMS</b><br/>→ S3 raw/catalog/ incremental"]:::aws
+        C["<b>Redshift DWH</b><br/>Historial compras / transacciones"]:::aws
+        C1["<b>UNLOAD</b><br/>→ S3 raw/transactions/ diario"]:::aws
+        D["<b>ElastiCache Redis</b><br/>Sesión activa · features real-time"]:::aws
+    end
+
+    A ==> A1
+    B ==> B1
+    C ==> C1
+
+    %% ═══════════════════════════════════════════════════════════
+    %% 1 · DATA INGESTION & VALIDATION
+    %% ═══════════════════════════════════════════════════════════
+    subgraph VALIDATION["<b>1 · DATA INGESTION &amp; VALIDATION</b>"]
+        V1["<b>Great Expectations</b><br/>Schema · nulls · ranges · freshness"]:::tool
+        V2["<b>S3 validated/</b><br/>Parquet particionado por fecha"]:::data
+        V3["<b>SNS → Slack</b><br/>Alerta si validación falla"]:::serve
+    end
+
+    A1 & B1 & C1 ==> V1
+    V1 ==> V2
+    V1 -.-> V3
+
+    %% ═══════════════════════════════════════════════════════════
+    %% 2 · FEATURE ENGINEERING
+    %% ═══════════════════════════════════════════════════════════
+    subgraph FEATURES["<b>2 · FEATURE ENGINEERING</b><br/>Spark on EKS"]
+        F1["<b>User Features</b><br/>CTR por categoría 7/14/30 d<br/>Frecuencia compra · RFM score<br/>Session embedding<br/>Hora / día cíclicas sin-cos"]:::data
+        F2["<b>Item Features</b><br/>Item2Vec embedding<br/>Popularidad 24 h<br/>Precio · categoría L1-L3<br/>Stock · margen · freshness"]:::data
+        F3["<b>Cross Features</b><br/>User × Category affinity<br/>Cosine sim user_emb · item_emb"]:::data
+        F4["<b>Feast Feature Store</b><br/>Offline → S3 · Online → Redis"]:::store
+        F5["<b>DVC</b><br/>Versiona dataset en S3"]:::tool
+    end
+
+    V2 ==> F1 & F2 & F3
+    D -.-> F1
+    F1 & F2 & F3 ==> F4
+    F1 & F2 & F3 -.-> F5
+
+    %% ═══════════════════════════════════════════════════════════
+    %% 3 · MODEL TRAINING
+    %% ═══════════════════════════════════════════════════════════
+    subgraph TRAINING["<b>3 · MODEL TRAINING</b><br/>KFP · EKS GPU p3.2xlarge"]
+        T1["<b>Stage A — Retrieval</b><br/>Two-Tower NN · TensorFlow<br/>User Tower 256→128→64<br/>Item Tower 256→128→64<br/>In-batch sampled softmax<br/>→ embeddings dim 64"]:::model
+        T2["<b>ANN Index</b><br/>FAISS / OpenSearch KNN"]:::store
+        T3["<b>Stage B — Ranking</b><br/>LightGBM LambdaRank<br/>Features: user + item + cross + retrieval<br/>Optimiza NDCG@10<br/>Optuna 50 trials"]:::model
+        T4["<b>Stage C — Re-Ranking</b><br/>MMR diversidad<br/>λ = 0.7 relevance vs diversity"]:::model
+        T5["<b>MLflow Tracking</b><br/>log_params · log_metrics<br/>log_artifact · SHA tag"]:::tool
+    end
+
+    F4 ==> T1
+    T1 ==> T2
+    T1 ==> T3
+    T3 ==> T4
+    T1 & T3 & T4 -.-> T5
+
+    %% ═══════════════════════════════════════════════════════════
+    %% 4 · MODEL EVALUATION
+    %% ═══════════════════════════════════════════════════════════
+    subgraph EVALUATION["<b>4 · MODEL EVALUATION</b>"]
+        E1["<b>Métricas Offline vs Champion</b><br/>NDCG@10 · NDCG@20<br/>Hit Rate@10 · MAP@10<br/>MRR · Catalog Coverage"]:::data
+        E2["<b>Evidently AI — Drift</b><br/>PSI por feature<br/>KS Test scores<br/>Target drift clicks / compras"]:::tool
+        E3{"<b>Decision Gate</b><br/>NDCG@10 &gt; champ − 0.02<br/>AND PSI &lt; 0.25"}:::gate
+        E4["<b>Evidently Report</b><br/>HTML → S3 + MLflow"]:::tool
+    end
+
+    T4 ==> E1
+    T4 ==> E2
+    E1 & E2 ==> E3
+    E2 -.-> E4
+
+    %% ═══════════════════════════════════════════════════════════
+    %% 5 · MODEL REGISTRATION
+    %% ═══════════════════════════════════════════════════════════
+    subgraph REGISTRATION["<b>5 · MODEL REGISTRATION</b>"]
+        R1["<b>MLflow Model Registry</b><br/>create_model_version<br/>Stage: Staging"]:::tool
+        R2["<b>Tags</b><br/>git_sha · dataset_version DVC<br/>training_date"]:::data
+        R3["<b>Artifacts</b><br/>TF SavedModel + LightGBM .pkl<br/>→ S3 artifact store"]:::data
+        R4["<b>SNS → Slack</b><br/>#ml-models"]:::serve
+    end
+
+    E3 -- PASS --> R1
+    R1 -.-> R2
+    R1 -.-> R3
+    R1 ==> R4
+
+    %% ═══════════════════════════════════════════════════════════
+    %% 6 · BATCH INFERENCE
+    %% ═══════════════════════════════════════════════════════════
+    subgraph BATCH["<b>6 · BATCH INFERENCE</b><br/>Spark on EKS · 4×/día"]
+        BI1["<b>Load modelo</b><br/>MLflow stage = Production"]:::model
+        BI2["<b>Load features</b><br/>Feast offline + online"]:::store
+        BI3["<b>Genera TOP-20</b><br/>Ranking por usuario activo"]:::model
+        BI4["<b>Redis ElastiCache</b><br/>user:id:recs TTL = 6 h"]:::serve
+        BI5["<b>S3 + Redshift</b><br/>predictions/ auditoría"]:::data
+        BI6["<b>Métricas batch</b><br/>Cobertura · p50/p99 latencia"]:::tool
+    end
+
+    R1 ==> BI1
+    BI1 ==> BI2
+    BI2 ==> BI3
+    BI3 ==> BI4
+    BI3 ==> BI5
+    BI3 -.-> BI6
+
+    %% ── Subgraph styling ──
+    style FUENTES fill:#fef3c7,stroke:#f59e0b,rx:10,color:#78350f
+    style VALIDATION fill:#dbeafe,stroke:#3b82f6,rx:10,color:#1e3a5f
+    style FEATURES fill:#ede9fe,stroke:#8b5cf6,rx:10,color:#3b0764
+    style TRAINING fill:#fce7f3,stroke:#ec4899,rx:10,color:#831843
+    style EVALUATION fill:#fee2e2,stroke:#ef4444,rx:10,color:#7f1d1d
+    style REGISTRATION fill:#d1fae5,stroke:#10b981,rx:10,color:#064e3b
+    style BATCH fill:#fff7ed,stroke:#f97316,rx:10,color:#7c2d12
 ```
 
 ### 4.3 Algoritmos y Justificación
@@ -239,6 +280,7 @@ Generar un **ranking personalizado de productos TOP-20** para cada usuario activ
 | **Cold Start** (usuarios nuevos) | **Content-Based + Popularidad** | Usuarios sin historial reciben top populares de su segmento demográfico |
 
 **Optimizaciones aplicadas:**
+
 - **Mixed Precision Training** (FP16) en Two-Tower → 2x más rápido en GPU
 - **Feature hashing** para categorías de alta cardinalidad (> 10K SKUs)
 - **Negative sampling** adaptativo (hard negatives de ANN) → mejor discriminación
@@ -246,72 +288,71 @@ Generar un **ranking personalizado de productos TOP-20** para cada usuario activ
 
 ### 4.4 Model Card – Productos Recomendados
 
-```
-╔═══════════════════════════════════════════════════════════════════════════╗
-║          MODEL CARD – DSRPMart Product Recommender v2.0                   ║
-╠═══════════════════════════════════════════════════════════════════════════╣
-║                                                                           ║
-║  INFORMACIÓN GENERAL                                                      ║
-║  ────────────────────                                                     ║
-║  Nombre del modelo:    product_recommender                                ║
-║  Versión:              2.0.0                                              ║
-║  Tipo:                 Two-Tower NN (Retrieval) + LambdaRank (Ranking)    ║
-║  Framework:            TensorFlow 2.15 + LightGBM 4.3                    ║
-║  Propietario:          Equipo Data Science – DSRPMart                     ║
-║  Fecha creación:       Febrero 2026                                       ║
-║  Revisado por:         ML Lead / MLOps Lead                               ║
-║  Frecuencia retrain:   Diario (incremental) + Semanal (full retrain)      ║
-║                                                                           ║
-║  DATOS DE ENTRENAMIENTO                                                   ║
-║  ──────────────────────                                                   ║
-║  Período:              Últimas 12 semanas (rolling window)                ║
-║  Volumen:              ~150M eventos de interacción / ~10M usuarios        ║
-║  Fuente principal:     S3 s3://dsrpmart-data/processed/events/            ║
-║  Split estrategia:     Temporal – Train (semanas 1-9) / Val (10-11)       ║
-║                        / Test (12). NO random split.                      ║
-║  Preprocesamiento:     Spark on EKS → Feature Store Feast                 ║
-║                                                                           ║
-║  MÉTRICAS DE EVALUACIÓN (Offline – Test Set)                              ║
-║  ────────────────────────────────────────────                             ║
-║  ├── NDCG@10:               0.391                                         ║
-║  ├── NDCG@20:               0.347                                         ║
-║  ├── Hit Rate@10:           0.624                                         ║
-║  ├── MAP@10:                0.218                                         ║
-║  ├── MRR:                   0.302                                         ║
-║  ├── Catalog Coverage:      71% (productos distintos en recs)             ║
-║  └── Retrieval Recall@100:  0.87 (Two-Tower → top 100 candidates)        ║
-║                                                                           ║
-║  MÉTRICAS DE NEGOCIO IMPACTADAS                                           ║
-║  ──────────────────────────────                                           ║
-║  ├── CTR (Click-Through Rate) en sección "Para Ti"                        ║
-║  ├── Add-to-Cart Rate desde recomendaciones                               ║
-║  ├── Revenue per Session (uplift vs sin recomendaciones)                   ║
-║  ├── Engagement: Tiempo promedio en app por sesión                        ║
-║  └── Retention: D7 retention rate de usuarios activos                     ║
-║                                                                           ║
-║  LIMITACIONES Y SESGOS CONOCIDOS                                          ║
-║  ────────────────────────────────                                         ║
-║  - Usuarios con < 5 interacciones usan fallback de popularidad            ║
-║  - Posible popularity bias: mitigado con MMR (diversity λ=0.7)            ║
-║  - Rankings > 6h de antigüedad pueden no reflejar stock actualizado       ║
-║  - No captura tendencias de minutos (ej: flash sale viral) sin streaming  ║
-║                                                                           ║
-║  USO PREVISTO                                                             ║
-║  ─────────────                                                            ║
-║  Generación batch de TOP-20 productos personalizados, actualizados 4      ║
-║  veces al día (00:00, 06:00, 12:00, 18:00 UTC). Servido vía Redis         ║
-║  ElastiCache con latencia < 5ms desde la API.                             ║
-║                                                                           ║
-║  UMBRALES DE ALERTA (Automated Guardrails)                                ║
-║  ──────────────────────────────────────────                               ║
-║  - NDCG@10 offline < 0.33       → bloquear despliegue                    ║
-║  - CTR online < 0.07            → activar análisis de causa raíz          ║
-║  - PSI cualquier feature > 0.25 → trigger reentrenamiento urgente         ║
-║  - Coverage < 50%               → revisar pipeline de candidatos          ║
-║  - Latencia Redis p99 > 10ms    → escalar ElastiCache                     ║
-║                                                                           ║
-╚═══════════════════════════════════════════════════════════════════════════╝
-```
+> **MODEL CARD — DSRPMart Product Recommender v2.0**
+
+**Información General**
+
+| Atributo | Detalle |
+|---|---|
+| **Nombre del modelo** | `product_recommender` |
+| **Versión** | 2.0.0 |
+| **Tipo** | Two-Tower NN (Retrieval) + LambdaRank (Ranking) |
+| **Framework** | TensorFlow 2.15 + LightGBM 4.3 |
+| **Propietario** | Equipo Data Science – DSRPMart |
+| **Fecha creación** | Febrero 2026 |
+| **Revisado por** | ML Lead / MLOps Lead |
+| **Frecuencia retrain** | Diario (incremental) + Semanal (full retrain) |
+
+**Datos de Entrenamiento**
+
+| Atributo | Detalle |
+|---|---|
+| **Período** | Últimas 12 semanas (rolling window) |
+| **Volumen** | ~150M eventos de interacción / ~10M usuarios |
+| **Fuente principal** | S3 `s3://dsrpmart-data/processed/events/` |
+| **Split estrategia** | Temporal – Train (semanas 1-9) / Val (10-11) / Test (12). NO random split. |
+| **Preprocesamiento** | Spark on EKS → Feature Store Feast |
+
+**Métricas de Evaluación (Offline — Test Set)**
+
+| Métrica | Valor |
+|---|---|
+| NDCG@10 | 0.391 |
+| NDCG@20 | 0.347 |
+| Hit Rate@10 | 0.624 |
+| MAP@10 | 0.218 |
+| MRR | 0.302 |
+| Catalog Coverage | 71% (productos distintos en recs) |
+| Retrieval Recall@100 | 0.87 (Two-Tower → top 100 candidates) |
+
+**Métricas de Negocio Impactadas**
+
+- CTR (Click-Through Rate) en sección "Para Ti"
+- Add-to-Cart Rate desde recomendaciones
+- Revenue per Session (uplift vs sin recomendaciones)
+- Engagement: Tiempo promedio en app por sesión
+- Retention: D7 retention rate de usuarios activos
+
+**Limitaciones y Sesgos Conocidos**
+
+- Usuarios con < 5 interacciones usan fallback de popularidad
+- Posible popularity bias: mitigado con MMR (diversity λ=0.7)
+- Rankings > 6h de antigüedad pueden no reflejar stock actualizado
+- No captura tendencias de minutos (ej: flash sale viral) sin streaming
+
+**Uso Previsto**
+
+- Generación batch de TOP-20 productos personalizados, actualizados 4 veces al día (00:00, 06:00, 12:00, 18:00 UTC). Servido vía Redis ElastiCache con latencia < 5ms desde la API.
+
+**Umbrales de Alerta (Automated Guardrails)**
+
+| Umbral | Acción |
+|---|---|
+| NDCG@10 offline < 0.33 | Bloquear despliegue |
+| CTR online < 0.07 | Activar análisis de causa raíz |
+| PSI cualquier feature > 0.25 | Trigger reentrenamiento urgente |
+| Coverage < 50% | Revisar pipeline de candidatos |
+| Latencia Redis p99 > 10ms | Escalar ElastiCache |
 
 ### 4.5 Diccionario / Catálogo de Fuentes de Datos
 
@@ -415,93 +456,140 @@ Conectar la **query/consulta del usuario** con los **TOP-K productos más releva
 
 ### 5.2 Flujo End-to-End
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                  FLUJO E2E – MOTOR DE BÚSQUEDA                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  FUENTES DE DATOS                                                       │
-│  ─────────────────                                                      │
-│  [A] Catálogo de productos (RDS → DMS → S3 CDC)                        │
-│  [B] Historial de búsquedas + clicks (Kinesis → S3)                    │
-│  [C] Queries de usuarios con resultados clickeados (ground truth)       │
-│  [D] Catálogo de sinónimos / expansiones (curado por equipo de search)  │
-│                                                                         │
-│  PIPELINE OFFLINE (Indexación + Training)                                │
-│  ────────────────────────────────────────                               │
-│                                                                         │
-│  [1] DATA PREPARATION (Airflow MWAA)                                    │
-│      ├── Construir pares (query, product_clicked) del historial         │
-│      ├── Negative sampling: productos mostrados pero NO clickeados      │
-│      ├── Validar: Great Expectations (schema, volumen mínimo)           │
-│      └── Output: S3 processed/search_training/                          │
-│           │                                                             │
-│           ▼                                                             │
-│  [2] EMBEDDINGS GENERATION (Kubeflow → EKS GPU)                        │
-│      ├── Modelo de embeddings: Sentence-BERT fine-tuned                 │
-│      │   └── Base: all-MiniLM-L6-v2 (384 dims, rápido)                 │
-│      │   └── Fine-tune con pares (query ↔ título+desc producto)         │
-│      │   └── Contrastive Loss (positive pairs + hard negatives)        │
-│      ├── Generar embeddings para TODOS los productos del catálogo       │
-│      ├── Output: S3 embeddings/ + MLflow artifact                       │
-│      └── MLflow: log model, params, eval metrics                        │
-│           │                                                             │
-│           ▼                                                             │
-│  [3] INDEX CONSTRUCTION (Kubeflow Component)                            │
-│      ├── Construir índice ANN (Approximate Nearest Neighbors)           │
-│      │   └── Amazon OpenSearch KNN Plugin (HNSW algorithm)              │
-│      │   └── Alternativa: FAISS IVF-PQ index en S3                     │
-│      ├── Indexar catálogo completo con metadatos:                       │
-│      │   └── product_id, title, category, price, stock, embedding       │
-│      └── Output: OpenSearch índice "products-v{N}" (blue-green)         │
-│           │                                                             │
-│           ▼                                                             │
-│  [4] RANKING MODEL TRAINING (Kubeflow → EKS)                           │
-│      ├── Learning-to-Rank con LightGBM                                  │
-│      │   ├── Features:                                                  │
-│      │   │   ├── BM25 score (lexical match)                             │
-│      │   │   ├── Semantic similarity (cosine query_emb × item_emb)      │
-│      │   │   ├── Exact match score (query terms en título)              │
-│      │   │   ├── Popularidad del producto (CTR, ventas)                 │
-│      │   │   ├── User-item affinity (si user está logueado)             │
-│      │   │   ├── Price competitiveness score                            │
-│      │   │   └── Stock availability flag                                │
-│      │   ├── Label: click (1), no-click (0), purchase (2)               │
-│      │   └── Optimiza: NDCG@10                                         │
-│      ├── MLflow: registro de experimento + modelo + métricas            │
-│      └── Decision Gate → MLflow Model Registry (Staging)                │
-│           │                                                             │
-│           ▼                                                             │
-│  [5] DAILY BATCH RE-INDEX (Airflow scheduled 02:00 UTC)                 │
-│      ├── Recomputa embeddings de productos nuevos/modificados (CDC)     │
-│      ├── Actualiza OpenSearch index (blue-green swap)                   │
-│      ├── Actualiza modelo de ranking si nueva versión en MLflow         │
-│      └── Warm-up cache de queries más frecuentes                       │
-│                                                                         │
-│  PIPELINE ONLINE (Serving en tiempo real)                                │
-│  ─────────────────────────────────────────                              │
-│                                                                         │
-│  [6] QUERY-TIME FLOW (< 100ms end-to-end)                              │
-│      ├── User query → API Gateway → Search Service (EKS Pod)           │
-│      ├── Step 1: Query preprocessing                                    │
-│      │   ├── Spell correction (SymSpell)                                │
-│      │   ├── Query expansion (sinónimos)                                │
-│      │   └── Tokenización + normalización                               │
-│      ├── Step 2: Retrieval (paralelo)                                   │
-│      │   ├── [Lexical] BM25 → OpenSearch text search → top 100         │
-│      │   ├── [Semantic] Query embedding → OpenSearch KNN → top 100      │
-│      │   └── Merge + dedup → ~150 candidates                           │
-│      ├── Step 3: Ranking                                                │
-│      │   ├── Feature computation on-the-fly (Redis features + basic)    │
-│      │   ├── LightGBM predict → score 150 candidates                   │
-│      │   └── Sort by score → top K (K configurable, default 20)         │
-│      ├── Step 4: Post-processing                                        │
-│      │   ├── Filtros: stock > 0, no productos reportados               │
-│      │   ├── Business boost: productos sponsoreados (weighted)          │
-│      │   └── Diversidad de sellers (max 3 resultados del mismo seller)  │
-│      └── Response → API Gateway → Frontend (< 100ms p95)               │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '11px', 'fontFamily': 'Segoe UI, Arial', 'lineColor': '#64748b'}}}%%
+flowchart TD
+
+    %% ── Class definitions ──
+    classDef aws fill:#FF9900,stroke:#232F3E,color:#232F3E,rx:6
+    classDef data fill:#3B82F6,stroke:#1E40AF,color:#fff,rx:6
+    classDef model fill:#8B5CF6,stroke:#5B21B6,color:#fff,rx:6
+    classDef tool fill:#10B981,stroke:#047857,color:#fff,rx:6
+    classDef gate fill:#EF4444,stroke:#991B1B,color:#fff,rx:6
+    classDef serve fill:#F59E0B,stroke:#92400E,color:#232F3E,rx:6
+    classDef store fill:#06B6D4,stroke:#0E7490,color:#fff,rx:6
+    classDef query fill:#EC4899,stroke:#9D174D,color:#fff,rx:6
+
+    %% ═══════════════════════════════════════════════════════════
+    %% FUENTES DE DATOS
+    %% ═══════════════════════════════════════════════════════════
+    subgraph FUENTES2["<b>FUENTES DE DATOS</b>"]
+        direction LR
+        SA["<b>Catálogo productos</b><br/>RDS → DMS → S3 CDC"]:::aws
+        SB["<b>Historial búsquedas</b><br/>Kinesis → S3"]:::aws
+        SC["<b>Ground truth</b><br/>Queries con resultados clickeados"]:::data
+        SD["<b>Sinónimos / Expansiones</b><br/>Curado por equipo search · Git"]:::data
+    end
+
+    %% ═══════════════════════════════════════════════════════════
+    %% 1 · DATA PREPARATION
+    %% ═══════════════════════════════════════════════════════════
+    subgraph DATAPREP["<b>1 · DATA PREPARATION</b><br/>Airflow MWAA"]
+        DP1["<b>Build training pairs</b><br/>query · product_clicked"]:::data
+        DP2["<b>Negative sampling</b><br/>Mostrados pero NO clickeados"]:::data
+        DP3["<b>Great Expectations</b><br/>Schema · volumen mínimo"]:::tool
+        DP4["<b>S3 processed/</b><br/>search_training/"]:::data
+    end
+
+    SA & SB & SC ==> DP1
+    DP1 ==> DP2
+    DP2 ==> DP3
+    DP3 ==> DP4
+
+    %% ═══════════════════════════════════════════════════════════
+    %% 2 · EMBEDDINGS GENERATION
+    %% ═══════════════════════════════════════════════════════════
+    subgraph EMBEDDINGS["<b>2 · EMBEDDINGS GENERATION</b><br/>KFP · EKS GPU"]
+        EM1["<b>Sentence-BERT fine-tune</b><br/>Base: all-MiniLM-L6-v2 384 d<br/>Fine-tune query ↔ título + desc<br/>Contrastive Loss + hard negatives"]:::model
+        EM2["<b>Product Embeddings</b><br/>Generar embeddings de<br/>TODO el catálogo"]:::model
+        EM3["<b>MLflow</b><br/>log model · params · eval metrics<br/>S3 embeddings/"]:::tool
+    end
+
+    DP4 ==> EM1
+    EM1 ==> EM2
+    EM2 ==> EM3
+    EM1 -.-> EM3
+
+    %% ═══════════════════════════════════════════════════════════
+    %% 3 · INDEX CONSTRUCTION
+    %% ═══════════════════════════════════════════════════════════
+    subgraph INDEX["<b>3 · INDEX CONSTRUCTION</b><br/>KFP Component"]
+        IX1["<b>OpenSearch KNN</b><br/>HNSW algorithm<br/>Alt: FAISS IVF-PQ en S3"]:::store
+        IX2["<b>Catálogo completo</b><br/>product_id · title · category<br/>price · stock · embedding"]:::data
+        IX3["<b>Index blue-green</b><br/>products-vN"]:::store
+    end
+
+    EM2 ==> IX1
+    IX1 ==> IX2
+    IX2 ==> IX3
+
+    %% ═══════════════════════════════════════════════════════════
+    %% 4 · RANKING MODEL
+    %% ═══════════════════════════════════════════════════════════
+    subgraph RANKING["<b>4 · RANKING MODEL</b><br/>KFP · EKS"]
+        RK1["<b>LightGBM LambdaRank</b><br/>Learning-to-Rank"]:::model
+        RK2["<b>Features</b><br/>BM25 score · Semantic sim<br/>Exact match · Popularidad CTR<br/>User-item affinity<br/>Price competitiveness · Stock"]:::data
+        RK3["<b>Labels</b><br/>click = 1 · no-click = 0 · purchase = 2<br/>Optimiza NDCG@10"]:::data
+        RK4["<b>MLflow Registry</b><br/>Staging"]:::tool
+        RK5{"<b>Decision Gate</b>"}:::gate
+    end
+
+    DP4 ==> RK1
+    RK2 -.-> RK1
+    RK3 -.-> RK1
+    RK1 ==> RK5
+    RK5 -- PASS --> RK4
+
+    %% ═══════════════════════════════════════════════════════════
+    %% 5 · DAILY RE-INDEX
+    %% ═══════════════════════════════════════════════════════════
+    subgraph REINDEX["<b>5 · DAILY RE-INDEX</b><br/>Airflow 02:00 UTC"]
+        RI1["<b>Recompute embeddings</b><br/>Productos nuevos / modificados CDC"]:::model
+        RI2["<b>Update OpenSearch</b><br/>Blue-green swap"]:::store
+        RI3["<b>Update ranking model</b><br/>Si nueva versión MLflow"]:::tool
+        RI4["<b>Warm-up cache</b><br/>Queries más frecuentes"]:::serve
+    end
+
+    IX3 & RK4 ==> RI1
+    RI1 ==> RI2
+    RI1 ==> RI3
+    RI2 & RI3 ==> RI4
+
+    %% ═══════════════════════════════════════════════════════════
+    %% 6 · QUERY-TIME FLOW
+    %% ═══════════════════════════════════════════════════════════
+    subgraph SERVING["<b>6 · QUERY-TIME FLOW</b><br/>&lt; 100 ms end-to-end"]
+        QT1["<b>API Gateway</b><br/>User query"]:::serve
+        QT2["<b>Search Service</b><br/>EKS Pod"]:::serve
+        QT3["<b>Query Preprocessing</b><br/>Spell correction SymSpell<br/>Sinónimos · Tokenización"]:::query
+        QT4["<b>BM25 Lexical</b><br/>OpenSearch text → top 100"]:::store
+        QT5["<b>KNN Semantic</b><br/>Query embedding → top 100"]:::store
+        QT6["<b>Merge + Dedup</b><br/>~150 candidates"]:::data
+        QT7["<b>LightGBM Predict</b><br/>Score 150 → top K = 20"]:::model
+        QT8["<b>Post-processing</b><br/>Stock &gt; 0 · No reportados<br/>Sponsored boost<br/>Seller diversity max 3"]:::query
+        QT9["<b>Response</b><br/>API Gateway → Frontend<br/>&lt; 100 ms p95"]:::serve
+    end
+
+    SD -.-> QT3
+    QT1 ==> QT2
+    QT2 ==> QT3
+    QT3 ==> QT4 & QT5
+    QT4 & QT5 ==> QT6
+    QT6 ==> QT7
+    QT7 ==> QT8
+    QT8 ==> QT9
+    RI2 -.-> QT4
+    RI2 -.-> QT5
+    RI4 -.-> QT3
+
+    %% ── Subgraph styling ──
+    style FUENTES2 fill:#fef3c7,stroke:#f59e0b,rx:10,color:#78350f
+    style DATAPREP fill:#dbeafe,stroke:#3b82f6,rx:10,color:#1e3a5f
+    style EMBEDDINGS fill:#ede9fe,stroke:#8b5cf6,rx:10,color:#3b0764
+    style INDEX fill:#ccfbf1,stroke:#14b8a6,rx:10,color:#134e4a
+    style RANKING fill:#fce7f3,stroke:#ec4899,rx:10,color:#831843
+    style REINDEX fill:#fff7ed,stroke:#f97316,rx:10,color:#7c2d12
+    style SERVING fill:#d1fae5,stroke:#10b981,rx:10,color:#064e3b
 ```
 
 ### 5.3 Algoritmos y Justificación
@@ -516,6 +604,7 @@ Conectar la **query/consulta del usuario** con los **TOP-K productos más releva
 | **Query expansion** | **Sinónimos curados + Word2Vec** | Expande "celular" → "smartphone", "teléfono móvil" |
 
 **Optimizaciones:**
+
 - **Hybrid Search** (BM25 + KNN en paralelo) → mejor recall que cualquiera solo
 - **Embedding quantization** (int8) → reduce tamaño del índice 4x, latencia 2x menor
 - **Query result caching** en ElastiCache Redis (TTL 30 min) para queries frecuentes
@@ -523,61 +612,62 @@ Conectar la **query/consulta del usuario** con los **TOP-K productos más releva
 
 ### 5.4 Model Card – Motor de Búsqueda
 
-```
-╔═══════════════════════════════════════════════════════════════════════════╗
-║          MODEL CARD – DSRPMart Search Engine v1.0                         ║
-╠═══════════════════════════════════════════════════════════════════════════╣
-║                                                                           ║
-║  INFORMACIÓN GENERAL                                                      ║
-║  ────────────────────                                                     ║
-║  Nombre del modelo:    search_engine (embedding + ranker)                 ║
-║  Versión:              1.0.0                                              ║
-║  Tipo:                 Sentence-BERT (Retrieval) + LambdaRank (Ranking)   ║
-║  Framework:            Sentence-Transformers 2.x + LightGBM 4.3          ║
-║  Propietario:          Equipo Data Science – DSRPMart                     ║
-║  Fecha creación:       Febrero 2026                                       ║
-║  Frecuencia retrain:   Semanal (embeddings) + Diario (ranker)             ║
-║                                                                           ║
-║  DATOS DE ENTRENAMIENTO                                                   ║
-║  ──────────────────────                                                   ║
-║  Período:              Últimos 6 meses de búsquedas                        ║
-║  Volumen:              ~50M pares (query, product_clicked)                 ║
-║                        ~200K queries únicas / ~500K productos              ║
-║  Fuente:               S3 s3://dsrpmart-data/processed/search/            ║
-║  Split:                Temporal – Train 80% / Val 10% / Test 10%          ║
-║                                                                           ║
-║  MÉTRICAS DE EVALUACIÓN (Offline)                                         ║
-║  ────────────────────────────────                                         ║
-║  ├── NDCG@10:                0.452                                        ║
-║  ├── MRR:                    0.387                                        ║
-║  ├── Recall@100 (retrieval): 0.91                                         ║
-║  ├── Precision@5:            0.34                                         ║
-║  └── Zero-result rate:       < 2% de queries                              ║
-║                                                                           ║
-║  MÉTRICAS DE NEGOCIO IMPACTADAS                                           ║
-║  ──────────────────────────────                                           ║
-║  ├── Search CTR (clicks en resultados / búsquedas)                        ║
-║  ├── Search Conversion Rate (compra tras búsqueda)                        ║
-║  ├── Zero-result Rate (búsquedas sin resultados)                          ║
-║  ├── Search Exit Rate (abandono tras búsqueda)                            ║
-║  └── Revenue per Search (ingresos atribuidos a búsqueda)                  ║
-║                                                                           ║
-║  LIMITACIONES                                                             ║
-║  ─────────────                                                            ║
-║  - Nuevos productos (< 24h) solo tienen retrieval lexical hasta re-index  ║
-║  - Queries muy largas (> 20 tokens) se truncan                            ║
-║  - Idioma: solo español (Latam). No soporta queries en otros idiomas      ║
-║  - Ranking personalizado solo para usuarios logueados con > 5 eventos     ║
-║                                                                           ║
-║  UMBRALES DE ALERTA                                                       ║
-║  ────────────────                                                         ║
-║  - Latencia p95 > 100ms     → escalar pods Search Service                ║
-║  - Zero-result rate > 5%    → revisar índice y sinónimos                  ║
-║  - Search CTR < 0.25        → análisis de relevancia + retraining         ║
-║  - Embedding drift > 0.20   → re-fine-tune Sentence-BERT                 ║
-║                                                                           ║
-╚═══════════════════════════════════════════════════════════════════════════╝
-```
+> **MODEL CARD — DSRPMart Search Engine v1.0**
+
+**Información General**
+
+| Atributo | Detalle |
+|---|---|
+| **Nombre del modelo** | `search_engine` (embedding + ranker) |
+| **Versión** | 1.0.0 |
+| **Tipo** | Sentence-BERT (Retrieval) + LambdaRank (Ranking) |
+| **Framework** | Sentence-Transformers 2.x + LightGBM 4.3 |
+| **Propietario** | Equipo Data Science – DSRPMart |
+| **Fecha creación** | Febrero 2026 |
+| **Frecuencia retrain** | Semanal (embeddings) + Diario (ranker) |
+
+**Datos de Entrenamiento**
+
+| Atributo | Detalle |
+|---|---|
+| **Período** | Últimos 6 meses de búsquedas |
+| **Volumen** | ~50M pares (query, product_clicked) / ~200K queries únicas / ~500K productos |
+| **Fuente** | S3 `s3://dsrpmart-data/processed/search/` |
+| **Split** | Temporal – Train 80% / Val 10% / Test 10% |
+
+**Métricas de Evaluación (Offline)**
+
+| Métrica | Valor |
+|---|---|
+| NDCG@10 | 0.452 |
+| MRR | 0.387 |
+| Recall@100 (retrieval) | 0.91 |
+| Precision@5 | 0.34 |
+| Zero-result rate | < 2% de queries |
+
+**Métricas de Negocio Impactadas**
+
+- Search CTR (clicks en resultados / búsquedas)
+- Search Conversion Rate (compra tras búsqueda)
+- Zero-result Rate (búsquedas sin resultados)
+- Search Exit Rate (abandono tras búsqueda)
+- Revenue per Search (ingresos atribuidos a búsqueda)
+
+**Limitaciones**
+
+- Nuevos productos (< 24h) solo tienen retrieval lexical hasta re-index
+- Queries muy largas (> 20 tokens) se truncan
+- Idioma: solo español (Latam). No soporta queries en otros idiomas
+- Ranking personalizado solo para usuarios logueados con > 5 eventos
+
+**Umbrales de Alerta**
+
+| Umbral | Acción |
+|---|---|
+| Latencia p95 > 100ms | Escalar pods Search Service |
+| Zero-result rate > 5% | Revisar índice y sinónimos |
+| Search CTR < 0.25 | Análisis de relevancia + retraining |
+| Embedding drift > 0.20 | Re-fine-tune Sentence-BERT |
 
 ### 5.5 Diccionario / Catálogo de Fuentes de Datos
 
@@ -664,11 +754,13 @@ flowchart LR
 | Complejidad del modelo | Two-Tower + LambdaRank son pesados para real-time per-request | Batch permite modelos más complejos |
 
 **¿Por qué NO real-time?**
+
 - Las recomendaciones no necesitan actualizarse en milisegundos; cada 4-6h es suficiente
 - La personalización real-time requeriría servir el modelo Two-Tower + LambdaRank por request, con costos de GPU significativos
 - El patrón batch → Redis da latencia < 5ms con costo muy inferior
 
 **¿Por qué NO streaming?**
+
 - No hay un evento individual que invalide todo el ranking (como un "stock agotado" que sí justificaría streaming)
 - La complejidad de Spark Structured Streaming + Feature Store real-time no justifica el incremento marginal de frescura
 
@@ -696,6 +788,7 @@ El Motor de Búsqueda es inherentemente **híbrido**: la indexación es batch pe
 | **Git branching model** | `main` → prod, `develop` → staging, `feature/*` → desarrollo | Trunk-based para fast iteration |
 
 **Estructura de repositorios:**
+
 ```
 dsrpmart-org/
 ├── dsrpmart-ml-models/          # código de modelos (training, evaluation)
@@ -748,6 +841,7 @@ dsrpmart-org/
 | **Administración** | **AWS Systems Manager** + **AWS Config** | Compliance, patching, inventario de recursos |
 
 **Arquitectura de Cuentas AWS (Multi-Account):**
+
 ```
 AWS Organization
 ├── Management Account (billing, guardrails)
@@ -766,6 +860,7 @@ AWS Organization
 | **Artifact Store** | S3 `s3://dsrpmart-mlflow-artifacts/` | Almacena modelos serializados, FAISS indices, reports |
 
 **Configuración MLflow:**
+
 ```yaml
 # Helm values para MLflow en EKS
 mlflow:
@@ -792,6 +887,7 @@ mlflow:
 | **Karpenter** + **Spot Instances** | Auto-scaling de nodos GPU/CPU para training | Reduce costos ~70% con Spot para workloads tolerantes |
 
 **Ejemplo DAG Airflow – Productos Recomendados:**
+
 ```python
 # dags/product_recommender_daily.py
 from airflow import DAG
@@ -875,70 +971,43 @@ with DAG(
 
 ### 7.f Solución para CI/CD
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                    CI/CD PIPELINE – GITHUB ACTIONS + ARGOCD          │
-├──────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  ┌──────────────────────────────────────────────────────────────┐    │
-│  │  CI – GitHub Actions (on every PR + merge to main)           │    │
-│  ├──────────────────────────────────────────────────────────────┤    │
-│  │                                                              │    │
-│  │  Job 1: lint-and-test                                        │    │
-│  │  ├── ruff lint (Python code quality)                         │    │
-│  │  ├── mypy (static type checking)                             │    │
-│  │  ├── pytest --cov (unit tests, >80% coverage)                │    │
-│  │  ├── pytest tests/integration/ (integration tests en mock)   │    │
-│  │  └── Great Expectations validation (sample data tests)       │    │
-│  │                                                              │    │
-│  │  Job 2: build-and-push (on merge to main)                    │    │
-│  │  ├── docker build --platform linux/amd64                      │    │
-│  │  ├── docker tag: {ECR_REPO}:{git-sha} + :latest              │    │
-│  │  ├── docker push → Amazon ECR                                │    │
-│  │  ├── trivy scan (container vulnerability scan)                │    │
-│  │  └── Attest: cosign sign (supply chain security)             │    │
-│  │                                                              │    │
-│  │  Job 3: ml-pipeline-test (on merge to main)                  │    │
-│  │  ├── DVC repro --dry (check reproducibility)                 │    │
-│  │  ├── Trigger KFP pipeline on staging cluster                 │    │
-│  │  ├── Wait for pipeline completion                            │    │
-│  │  ├── Compare metrics vs. Champion (MLflow API)               │    │
-│  │  └── Auto-comment PR with metric comparison table            │    │
-│  │                                                              │    │
-│  └──────────────────────────────────────────────────────────────┘    │
-│                           │                                          │
-│                      (on success)                                    │
-│                           │                                          │
-│  ┌──────────────────────────────────────────────────────────────┐    │
-│  │  CD – ArgoCD GitOps (Continuous Deployment)                  │    │
-│  ├──────────────────────────────────────────────────────────────┤    │
-│  │                                                              │    │
-│  │  Step 1: GitHub Actions updates Helm values                  │    │
-│  │  ├── Updates image.tag in helm/*/values-prod.yaml            │    │
-│  │  ├── Commits to dsrpmart-infra repo (gitops-prod branch)    │    │
-│  │  └── Creates PR for approval (auto-merge for staging)        │    │
-│  │                                                              │    │
-│  │  Step 2: ArgoCD detects change in Git                        │    │
-│  │  ├── Reconciles EKS cluster state with desired state         │    │
-│  │  ├── Rolling update of pods (zero-downtime)                  │    │
-│  │  └── Health checks (readinessProbe + livenessProbe)          │    │
-│  │                                                              │    │
-│  │  Step 3: Post-deploy validation                              │    │
-│  │  ├── Smoke tests (automated e2e test in staging)             │    │
-│  │  ├── MLflow model transition: Staging → Production           │    │
-│  │  ├── Slack notification: #ml-deployments                     │    │
-│  │  └── Rollback automático si health check falla               │    │
-│  │                                                              │    │
-│  └──────────────────────────────────────────────────────────────┘    │
-│                                                                      │
-│  ROLLBACK PROCEDURE                                                  │
-│  ─────────────────                                                   │
-│  ├── Automático: ArgoCD detecta pod CrashLoop → reverts              │
-│  ├── Manual: git revert en dsrpmart-infra → ArgoCD reconcilia       │
-│  ├── MLflow: promote versión anterior → "Production"                 │
-│  └── PagerDuty alert → on-call MLOps engineer                       │
-│                                                                      │
-└──────────────────────────────────────────────────────────────────────┘
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '12px', 'fontFamily': 'Segoe UI, Arial', 'lineColor': '#64748b'}}}%%
+flowchart TD
+    subgraph CI["CI — GitHub Actions  ·  on PR + merge to main"]
+        direction TB
+        LINT["<b>Job 1: Lint & Test</b><br>ruff lint · mypy · pytest --cov >80%<br>integration tests (mock) · Great Expectations"]:::ci
+        BUILD["<b>Job 2: Build & Push</b><br>Docker build linux/amd64 → ECR :sha + :latest<br>Trivy vulnerability scan · cosign sign"]:::ci
+        MLTEST["<b>Job 3: ML Pipeline Test</b><br>DVC repro --dry · Trigger KFP staging<br>Compare metrics vs Champion (MLflow API)<br>Auto-comment PR with comparison table"]:::ci
+        LINT --> BUILD --> MLTEST
+    end
+
+    subgraph CD["CD — ArgoCD GitOps  ·  Continuous Deployment"]
+        direction TB
+        HELM["<b>Step 1: Update Helm Values</b><br>image.tag → values-prod.yaml<br>Commit dsrpmart-infra · PR approval"]:::cd
+        SYNC["<b>Step 2: ArgoCD Sync</b><br>Reconcile EKS cluster state<br>Rolling update pods · zero-downtime<br>readinessProbe + livenessProbe"]:::cd
+        POST["<b>Step 3: Post-Deploy</b><br>Smoke tests (e2e staging)<br>MLflow: Staging → Production<br>Slack #ml-deployments"]:::cd
+        HELM --> SYNC --> POST
+    end
+
+    subgraph RB["ROLLBACK PROCEDURE"]
+        direction LR
+        AUTO["<b>Automático</b><br>ArgoCD: CrashLoop → reverts"]:::rb
+        MANUAL["<b>Manual</b><br>git revert → ArgoCD reconcilia"]:::rb
+        MLRB["<b>MLflow</b><br>Promote versión anterior"]:::rb
+        PD["<b>PagerDuty</b><br>On-call MLOps alert"]:::rb
+    end
+
+    MLTEST ==>|"✅ All checks pass"| HELM
+    POST -.->|"❌ Health check fail"| AUTO
+
+    classDef ci fill:#2563eb,stroke:#1d4ed8,color:#fff,stroke-width:2px
+    classDef cd fill:#15803d,stroke:#166534,color:#fff,stroke-width:2px
+    classDef rb fill:#b91c1c,stroke:#991b1b,color:#fff,stroke-width:1px
+
+    style CI fill:#eef2ff,stroke:#818cf8,stroke-width:2px,rx:10
+    style CD fill:#dcfce7,stroke:#22c55e,stroke-width:2px,rx:10
+    style RB fill:#fef2f2,stroke:#fca5a5,stroke-width:1px,rx:10
 ```
 
 ### 7.g Métricas de Performance, Aplicación y Herramientas de Visualización
@@ -955,24 +1024,42 @@ with DAG(
 | **Costos** | Spend por servicio, costo por prediction, cost per experiment | AWS Cost Explorer + custom tags | QuickSight + Grafana |
 
 **Stack de Observabilidad:**
-```
-Prometheus (EKS) ──────→ Grafana (dashboards)
-    ├── kube-state-metrics        ├── Dashboard: ML Model Health
-    ├── node-exporter             ├── Dashboard: Search Latency
-    ├── custom app metrics        ├── Dashboard: Recommendation KPIs
-    └── alertmanager ──→ PagerDuty (on-call)
-                     ──→ Slack (#ml-alerts)
 
-CloudWatch (AWS) ──────→ Grafana (vía CloudWatch datasource)
-    ├── MWAA Airflow metrics
-    ├── ElastiCache Redis metrics
-    ├── OpenSearch metrics
-    └── Kinesis throughput
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '12px', 'fontFamily': 'Segoe UI, Arial', 'lineColor': '#64748b'}}}%%
+flowchart LR
+    subgraph COLLECT["DATA COLLECTION"]
+        direction TB
+        PROM["<b>Prometheus</b><br>kube-state-metrics<br>node-exporter<br>custom app metrics"]:::prom
+        CW["<b>CloudWatch</b><br>MWAA Airflow · ElastiCache<br>OpenSearch · Kinesis"]:::aws
+        EV["<b>Evidently AI</b><br>Feature drift · Prediction drift<br>Target drift (batch reports)"]:::ev
+    end
 
-Evidently AI (batch) ──→ S3 HTML reports + Grafana (custom panel)
-    ├── Feature drift per model
-    ├── Prediction drift
-    └── Target drift
+    subgraph VIZ["VISUALIZATION"]
+        direction TB
+        GF["<b>Grafana Dashboards</b><br>ML Model Health<br>Search Latency · Rec KPIs<br>Infrastructure · Pipeline Health"]:::grafana
+    end
+
+    subgraph ALERT["ALERTING"]
+        direction TB
+        AM["<b>AlertManager</b>"]:::alert
+        PD["PagerDuty<br>on-call"]:::alert
+        SL["Slack<br>#ml-alerts"]:::alert
+        AM --> PD & SL
+    end
+
+    PROM & CW & EV ==> GF
+    PROM --> AM
+
+    classDef prom fill:#e6522c,stroke:#c43e1f,color:#fff,stroke-width:2px
+    classDef aws fill:#232f3e,stroke:#ff9900,color:#ff9900,stroke-width:2px
+    classDef ev fill:#7c3aed,stroke:#6d28d9,color:#fff,stroke-width:1px
+    classDef grafana fill:#f46800,stroke:#d45800,color:#fff,stroke-width:2px
+    classDef alert fill:#dc2626,stroke:#b91c1c,color:#fff,stroke-width:1px
+
+    style COLLECT fill:#f8fafc,stroke:#cbd5e0,stroke-width:1px,rx:10
+    style VIZ fill:#fff7ed,stroke:#fdba74,stroke-width:2px,rx:10
+    style ALERT fill:#fef2f2,stroke:#fca5a5,stroke-width:1px,rx:10
 ```
 
 ### 7.h Soluciones Adicionales
@@ -1155,6 +1242,7 @@ flowchart TD
 ```
 
 Se utiliza la **misma estrategia para ambos modelos** porque:
+
 1. Ambos tienen componente batch (se puede hacer shadow sin costo de latencia)
 2. Ambos impactan métricas de negocio medibles (CTR, conversion, revenue)
 3. La infraestructura compartida (EKS + Redis + MLflow) soporta multi-version nativa
@@ -1162,93 +1250,98 @@ Se utiliza la **misma estrategia para ambos modelos** porque:
 
 ### 8.2 Diagrama de Proceso de Despliegue
 
-```
-╔══════════════════════════════════════════════════════════════════════════╗
-║       PROCESO DE DESPLIEGUE DE MODELOS – DSRPMart (ambos modelos)       ║
-╠══════════════════════════════════════════════════════════════════════════╣
-║                                                                          ║
-║  FASE 0: DESARROLLO + EXPERIMENTACIÓN                                   ║
-║  ────────────────────────────────────                                    ║
-║  ┌────────────────────────────────────────────────────────────────┐      ║
-║  │  Data Scientist trabaja en branch feature/                     │      ║
-║  │  ├── Experimenta en JupyterHub (Kubeflow Notebooks)           │      ║
-║  │  ├── Registra experimentos en MLflow (experiment tracking)    │      ║
-║  │  ├── Usa Feast para acceder a features (offline store)         │      ║
-║  │  ├── DVC tracks dataset version                               │      ║
-║  │  └── Cuando métricas offline son prometedoras → PR a develop  │      ║
-║  └────────────────────────────────────────────────────────────────┘      ║
-║       │                                                                  ║
-║       ▼                                                                  ║
-║  FASE 1: VALIDACIÓN EN STAGING                                           ║
-║  ─────────────────────────────                                           ║
-║  ┌────────────────────────────────────────────────────────────────┐      ║
-║  │  PR merged → GitHub Actions CI/CD                              │      ║
-║  │  ├── Tests pasan (unit + integration + data quality)           │      ║
-║  │  ├── Docker image built → pushed a ECR (:sha)                  │      ║
-║  │  ├── KFP Pipeline triggered en staging EKS                     │      ║
-║  │  │   ├── Train con datos staging (subset de prod data)        │      ║
-║  │  │   ├── Evaluate: métricas offline vs. Champion actual       │      ║
-║  │  │   └── Evidently report: drift check                        │      ║
-║  │  ├── IF pass → MLflow register model (stage=Staging)           │      ║
-║  │  └── Slack notification: "Model v{X} ready for shadow"        │      ║
-║  └────────────────────────────────────────────────────────────────┘      ║
-║       │                                                                  ║
-║       ▼                                                                  ║
-║  FASE 2: SHADOW MODE (1 semana)                                         ║
-║  ──────────────────────────────                                          ║
-║  ┌────────────────────────────────────────────────────────────────┐      ║
-║  │  Challenger genera predicciones en PARALELO al Champion        │      ║
-║  │  ├── Recomendador: batch inference → Redis ns "challenger"     │      ║
-║  │  │   (NO se muestran al usuario, solo se almacenan)            │      ║
-║  │  ├── Buscador: ranking challenger vs champion (logged only)    │      ║
-║  │  │   (usuario ve resultados del Champion, Challenger logs)     │      ║
-║  │  ├── Comparación automática offline:                           │      ║
-║  │  │   ├── NDCG, MRR, Coverage (diario)                         │      ║
-║  │  │   └── Evidently drift report                                │      ║
-║  │  └── Dashboard Grafana: Champion vs. Challenger side-by-side  │      ║
-║  └────────────────────────────────────────────────────────────────┘      ║
-║       │                                                                  ║
-║       ▼                                                                  ║
-║  FASE 3: A/B TEST (1-2 semanas)                                         ║
-║  ───────────────────────────────                                         ║
-║  ┌────────────────────────────────────────────────────────────────┐      ║
-║  │  Split de tráfico: 80% Champion / 20% Challenger               │      ║
-║  │  ├── Recomendador:                                             │      ║
-║  │  │   ├── Redis key: user:{id}:recs (champion group)            │      ║
-║  │  │   ├── Redis key: user:{id}:recs:challenger (test group)     │      ║
-║  │  │   └── Frontend: routing por user_id % 100 (determinista)    │      ║
-║  │  ├── Buscador:                                                 │      ║
-║  │  │   ├── Search Service: model_version param en request        │      ║
-║  │  │   └── Routing por user_id hash (sticky sessions)            │      ║
-║  │  ├── Medición de KPIs por grupo:                               │      ║
-║  │  │   ├── CTR, Conversion, Revenue, Session Time                │      ║
-║  │  │   ├── Statistical significance: t-test (p < 0.05)          │      ║
-║  │  │   └── Minimum Detectable Effect: 2% CTR lift               │      ║
-║  │  └── Dashboard: Redshift → QuickSight A/B analysis            │      ║
-║  └────────────────────────────────────────────────────────────────┘      ║
-║       │                                                                  ║
-║     ┌─┴──────────────────────────────────┐                              ║
-║     │  ¿Challenger supera Champion?       │                              ║
-║     │  (KPI lift > threshold + p<0.05)    │                              ║
-║     └─┬────────────────────────────┬──────┘                              ║
-║       │ SÍ                         │ NO                                  ║
-║       ▼                            ▼                                     ║
-║  FASE 4a: PROMOCIÓN            FASE 4b: ROLLBACK                        ║
-║  ─────────────────             ──────────────────                        ║
-║  ┌──────────────────────┐     ┌──────────────────────┐                  ║
-║  │ MLflow: Challenger    │     │ Challenger archivado  │                  ║
-║  │ → stage="Production"  │     │ Champion continúa     │                  ║
-║  │ Champion              │     │ Post-mortem doc       │                  ║
-║  │ → stage="Archived"    │     │ Learnings → backlog   │                  ║
-║  │                       │     └──────────────────────┘                  ║
-║  │ ArgoCD: update        │                                               ║
-║  │ ConfigMap model_ver   │                                               ║
-║  │                       │                                               ║
-║  │ Full rollout 100%     │                                               ║
-║  │ Monitoring 48h        │                                               ║
-║  └──────────────────────┘                                               ║
-║                                                                          ║
-╚══════════════════════════════════════════════════════════════════════════╝
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '12px', 'fontFamily': 'Segoe UI, Arial', 'lineColor': '#64748b'}}}%%
+flowchart TD
+    subgraph F0["<b>FASE 0 · DESARROLLO + EXPERIMENTACIÓN</b>"]
+        direction TB
+        DEV_DS["<b>Data Scientist en branch feature/*</b><br>JupyterHub · Kubeflow Notebooks"]:::phase0
+        DEV_EXP["<b>Experimentación</b><br>MLflow experiment tracking<br>Feast offline store · DVC dataset versioning"]:::phase0
+        DEV_PR["<b>Métricas offline prometedoras</b><br>→ PR a develop"]:::phase0
+        DEV_DS ==> DEV_EXP ==> DEV_PR
+    end
+
+    DEV_PR ==>|"PR + Code Review"| F1_MERGE
+
+    subgraph F1["<b>FASE 1 · VALIDACIÓN EN STAGING</b>"]
+        direction TB
+        F1_MERGE["<b>PR merged → GitHub Actions CI/CD</b><br>Tests: unit + integration + data quality"]:::phase1
+        F1_BUILD["<b>Docker image built → ECR :sha</b><br>KFP Pipeline triggered en staging EKS"]:::phase1
+        F1_EVAL["<b>Evaluación Staging</b><br>Train con datos staging · Métricas vs Champion<br>Evidently drift report"]:::phase1
+        F1_REG["<b>IF pass → MLflow stage=Staging</b><br>Slack: Model v X ready for shadow"]:::phase1
+        F1_MERGE ==> F1_BUILD ==> F1_EVAL ==> F1_REG
+    end
+
+    F1_REG ==>|"NDCG pass + drift OK"| F2_SHADOW
+
+    subgraph F2["<b>FASE 2 · SHADOW MODE — 1 semana</b>"]
+        direction TB
+        F2_SHADOW["<b>Challenger predicciones en PARALELO</b><br>No se muestran al usuario"]:::phase2
+        F2_REC["<b>Recomendador:</b> batch inference →<br>Redis ns challenger · solo almacenadas"]:::phase2
+        F2_SEARCH["<b>Buscador:</b> ranking challenger vs champion<br>logged only · usuario ve Champion"]:::phase2
+        F2_COMP["<b>Comparación diaria automática</b><br>NDCG · MRR · Coverage<br>Evidently drift report"]:::phase2
+        F2_DASH["<b>Dashboard Grafana</b><br>Champion vs Challenger side-by-side"]:::phase2
+        F2_SHADOW ==> F2_REC & F2_SEARCH
+        F2_REC & F2_SEARCH ==> F2_COMP ==> F2_DASH
+    end
+
+    F2_DASH ==>|"Métricas estables"| F3_SPLIT
+
+    subgraph F3["<b>FASE 3 · A/B TEST — 1-2 semanas</b>"]
+        direction TB
+        F3_SPLIT["<b>Split de tráfico</b><br>80% Champion / 20% Challenger"]:::phase3
+        F3_REC["<b>Recomendador</b><br>Redis: user:id:recs champion<br>Redis: user:id:recs:challenger test<br>Frontend routing user_id % 100"]:::phase3
+        F3_SEARCH2["<b>Buscador</b><br>model_version param · user_id hash<br>sticky sessions"]:::phase3
+        F3_KPI["<b>Medición KPIs por grupo</b><br>CTR · Conversion · Revenue · Session Time<br>t-test p < 0.05 · MDE 2% CTR lift"]:::phase3
+        F3_QUICK["<b>Dashboard A/B</b><br>Redshift → QuickSight"]:::phase3
+        F3_SPLIT ==> F3_REC & F3_SEARCH2
+        F3_REC & F3_SEARCH2 ==> F3_KPI ==> F3_QUICK
+    end
+
+    F3_QUICK ==> GATE
+
+    GATE{"<b>¿Challenger supera Champion?</b><br>KPI lift > threshold · p < 0.05"}:::gate
+
+    GATE ==>|"SÍ · Significativo"| PROMOTE
+    GATE ==>|"NO"| ROLLBACK
+
+    subgraph F4A["<b>FASE 4a · PROMOCIÓN</b>"]
+        direction TB
+        PROMOTE["<b>MLflow: Challenger → Production</b><br>Champion → Archived"]:::success
+        ARGO["<b>ArgoCD: update ConfigMap</b><br>model_version → nueva versión"]:::success
+        ROLLOUT["<b>Full rollout 100%</b>"]:::success
+        MON48["<b>Monitoring intensivo 48h</b><br>Prometheus · Grafana · PagerDuty"]:::monitor
+        PROMOTE ==> ARGO ==> ROLLOUT ==> MON48
+    end
+
+    subgraph F4B["<b>FASE 4b · ROLLBACK</b>"]
+        direction TB
+        ROLLBACK["<b>Challenger archivado</b><br>Champion continúa operando"]:::fail
+        POSTMORTEM["<b>Post-mortem doc</b><br>Learnings → backlog"]:::fail
+        NEWEXP["Nuevos experimentos"]:::neutral
+        ROLLBACK ==> POSTMORTEM ==> NEWEXP
+    end
+
+    F2_DASH -.->|"Grafana"| GRAFANA_MON["📊 Grafana Dashboards"]:::monitor
+    F3_QUICK -.->|"QuickSight"| GRAFANA_MON
+    MON48 -.-> GRAFANA_MON
+
+    classDef phase0 fill:#1e3a5f,stroke:#0f2942,color:#e2e8f0,stroke-width:2px
+    classDef phase1 fill:#2563eb,stroke:#1d4ed8,color:#fff,stroke-width:2px
+    classDef phase2 fill:#7c3aed,stroke:#6d28d9,color:#fff,stroke-width:2px
+    classDef phase3 fill:#ca8a04,stroke:#a16207,color:#fff,stroke-width:2px
+    classDef gate fill:#fef3c7,stroke:#d97706,color:#92400e,stroke-width:3px,font-weight:bold
+    classDef success fill:#15803d,stroke:#166534,color:#fff,stroke-width:3px,font-weight:bold
+    classDef fail fill:#b91c1c,stroke:#991b1b,color:#fff,stroke-width:2px
+    classDef monitor fill:#0e7490,stroke:#155e75,color:#fff,stroke-width:1px
+    classDef neutral fill:#f1f5f9,stroke:#94a3b8,color:#475569,stroke-width:1px
+
+    style F0 fill:#f0f4ff,stroke:#1e3a5f,stroke-width:2px,rx:8
+    style F1 fill:#eff6ff,stroke:#2563eb,stroke-width:2px,rx:8
+    style F2 fill:#f5f3ff,stroke:#7c3aed,stroke-width:2px,rx:8
+    style F3 fill:#fefce8,stroke:#ca8a04,stroke-width:2px,rx:8
+    style F4A fill:#f0fdf4,stroke:#15803d,stroke-width:2px,rx:8
+    style F4B fill:#fef2f2,stroke:#b91c1c,stroke-width:2px,rx:8
 ```
 
 ---
@@ -1287,88 +1380,53 @@ Se utiliza la **misma estrategia para ambos modelos** porque:
 
 ### 9.3 Actores y Equipos
 
-```
-╔══════════════════════════════════════════════════════════════════════════╗
-║                    ORGANIZACIÓN DEL EQUIPO DSRPMart ML                   ║
-╠════════════════════════╦═════════════════════════════════════════════════╣
-║  Rol                   ║  Responsabilidades                              ║
-╠════════════════════════╬═════════════════════════════════════════════════╣
-║  ML Lead / Arquitecto  ║  Diseño de arquitectura MLOps, Model Cards,     ║
-║  (1 persona)           ║  decisiones de stack, go/no-go de despliegues,  ║
-║                        ║  revisión técnica de modelos y pipelines         ║
-╠════════════════════════╬═════════════════════════════════════════════════╣
-║  Data Scientist Sr     ║  Two-Tower, Sentence-BERT: modelos complejos,   ║
-║  (1 persona)           ║  research de arquitecturas, tuning avanzado     ║
-╠════════════════════════╬═════════════════════════════════════════════════╣
-║  Data Scientist        ║  LambdaRank, Item2Vec, feature engineering,     ║
-║  (2 personas)          ║  EDA, experimentación, evaluación offline       ║
-╠════════════════════════╬═════════════════════════════════════════════════╣
-║  MLOps Engineer        ║  Kubeflow Pipelines, Airflow DAGs, CI/CD,       ║
-║  (2 personas)          ║  batch inference, monitoring, Evidently,        ║
-║                        ║  MLflow administration, on-call rotación        ║
-╠════════════════════════╬═════════════════════════════════════════════════╣
-║  Data Engineer         ║  Kinesis ingesta, Spark jobs, DMS CDC,          ║
-║  (1 persona)           ║  Redshift DWH, data quality contracts           ║
-╠════════════════════════╬═════════════════════════════════════════════════╣
-║  ML Platform Engineer  ║  EKS cluster, Terraform, ArgoCD, Feast,        ║
-║  (1 persona)           ║  OpenSearch, ElastiCache, seguridad (IRSA)      ║
-╠════════════════════════╬═════════════════════════════════════════════════╣
-║  Backend Engineer      ║  FastAPI Search Service, API Gateway, frontend  ║
-║  (1 persona)           ║  integration, Redis client optimization         ║
-╠════════════════════════╬═════════════════════════════════════════════════╣
-║  Product Owner         ║  Definir KPIs, priorizar features, stakeholder  ║
-║  (1 persona)           ║  management, A/B test analysis review           ║
-╠════════════════════════╬═════════════════════════════════════════════════╣
-║  QA / Analytics        ║  A/B test statistical analysis, data validation,║
-║  (1 persona)           ║  regression testing, UAT                        ║
-╠════════════════════════╬═════════════════════════════════════════════════╣
-║  TOTAL: 11 personas                                                      ║
-╚══════════════════════════════════════════════════════════════════════════╝
-```
+**Organización del Equipo DSRPMart ML**
+
+| Rol | Personas | Responsabilidades |
+|---|:---:|---|
+| **ML Lead / Arquitecto** | 1 | Diseño de arquitectura MLOps, Model Cards, decisiones de stack, go/no-go de despliegues, revisión técnica de modelos y pipelines |
+| **Data Scientist Sr** | 1 | Two-Tower, Sentence-BERT: modelos complejos, research de arquitecturas, tuning avanzado |
+| **Data Scientist** | 2 | LambdaRank, Item2Vec, feature engineering, EDA, experimentación, evaluación offline |
+| **MLOps Engineer** | 2 | Kubeflow Pipelines, Airflow DAGs, CI/CD, batch inference, monitoring, Evidently, MLflow administration, on-call rotación |
+| **Data Engineer** | 1 | Kinesis ingesta, Spark jobs, DMS CDC, Redshift DWH, data quality contracts |
+| **ML Platform Engineer** | 1 | EKS cluster, Terraform, ArgoCD, Feast, OpenSearch, ElastiCache, seguridad (IRSA) |
+| **Backend Engineer** | 1 | FastAPI Search Service, API Gateway, frontend integration, Redis client optimization |
+| **Product Owner** | 1 | Definir KPIs, priorizar features, stakeholder management, A/B test analysis review |
+| **QA / Analytics** | 1 | A/B test statistical analysis, data validation, regression testing, UAT |
+| **TOTAL** | **11** | |
 
 ### 9.4 Modelo de Colaboración
 
-```
-PROCESO DE TRABAJO – ML-ADAPTED SCRUM
-──────────────────────────────────────
+**Proceso de Trabajo — ML-Adapted Scrum**
 
-CADENCIA
-├── Sprint: 2 semanas
-├── Daily Standup: 15 min (async en Slack los viernes)
-├── Sprint Planning: lunes S1 (2h)
-├── Sprint Review: viernes S2 (1h) – demo de métricas + pipeline
-├── Retro: viernes S2 (30 min)
-└── ML Review: miércoles S2 (1h) – revisión técnica de modelos
+**Cadencia:**
 
-ARTEFACTOS
-├── Product Backlog: Jira Board "DSRPMart ML"
-├── Sprint Backlog: Jira + GitHub Projects
-├── RFC (Request For Comments): Documento técnico en Notion
-│   └── Requerido para: nuevo modelo, cambio de stack, nuevo pipeline
-├── Model Card: actualizado en cada release (en repo Git)
-├── Runbook: procedimientos de on-call y rollback en Confluence
-└── ADR (Architecture Decision Records): en repo dsrpmart-infra/
+| Ceremonia | Frecuencia |
+|---|---|
+| Sprint | 2 semanas |
+| Daily Standup | 15 min (async en Slack los viernes) |
+| Sprint Planning | Lunes S1 (2h) |
+| Sprint Review | Viernes S2 (1h) — demo de métricas + pipeline |
+| Retro | Viernes S2 (30 min) |
+| ML Review | Miércoles S2 (1h) — revisión técnica de modelos |
 
-COLABORACIÓN ENTRE EQUIPOS
-├── Data Scientist ↔ MLOps:
-│   ├── DS entrega: notebook reproducible + MLflow experiment ID
-│   └── MLOps convierte a: KFP Pipeline + Airflow DAG + CI/CD
-│
-├── Data Engineering ↔ ML:
-│   ├── Contrato de datos: Great Expectations suite compartida
-│   ├── DE publica features en Feast offline store
-│   └── ML consume vía Feast SDK (100% reproducible)
-│
-├── Backend ↔ ML:
-│   ├── API contract: OpenAPI spec (search, recommendations)
-│   ├── Redis key naming convention documentada
-│   └── SLA: latencia p99, throughput, error budget
-│
-└── Product ↔ ML:
-    ├── KPI definition doc (antes de cada modelo)
-    ├── A/B test plan con sample size calculado
-    └── Go/No-Go decision meeting post A/B test
-```
+**Artefactos:**
+
+- **Product Backlog:** Jira Board "DSRPMart ML"
+- **Sprint Backlog:** Jira + GitHub Projects
+- **RFC (Request For Comments):** Documento técnico en Notion (requerido para: nuevo modelo, cambio de stack, nuevo pipeline)
+- **Model Card:** Actualizado en cada release (en repo Git)
+- **Runbook:** Procedimientos de on-call y rollback en Confluence
+- **ADR (Architecture Decision Records):** En repo dsrpmart-infra/
+
+**Colaboración entre equipos:**
+
+| Interacción | Mecanismo |
+|---|---|
+| DS ↔ MLOps | DS entrega notebook reproducible + MLflow experiment ID → MLOps convierte a KFP Pipeline + Airflow DAG + CI/CD |
+| DE ↔ ML | Contrato de datos: Great Expectations suite compartida · DE publica features en Feast offline store · ML consume vía Feast SDK (100% reproducible) |
+| Backend ↔ ML | API contract: OpenAPI spec (search, recommendations) · Redis key naming convention documentada · SLA: latencia p99, throughput, error budget |
+| Product ↔ ML | KPI definition doc (antes de cada modelo) · A/B test plan con sample size calculado · Go/No-Go decision meeting post A/B test |
 
 ---
 
@@ -1376,321 +1434,316 @@ COLABORACIÓN ENTRE EQUIPOS
 
 ### 10.a End-to-End Entrenamiento de Modelo (Ambos Modelos)
 
-```
-╔══════════════════════════════════════════════════════════════════════════╗
-║    PIPELINE E2E ENTRENAMIENTO – AWS + Airflow + Kubeflow + MLflow        ║
-╠══════════════════════════════════════════════════════════════════════════╣
-║                                                                          ║
-║  ┌─────────────────────────────────────────────────┐                    ║
-║  │  AMAZON MWAA (Managed Airflow)                    │                    ║
-║  │  DAG: {model}_training_pipeline                   │                    ║
-║  │  Schedule:                                        │                    ║
-║  │    - product_recommender: daily 00:00 UTC         │                    ║
-║  │    - search_engine:       daily 02:00 UTC         │                    ║
-║  └───────────────────────┬─────────────────────────┘                    ║
-║                          │                                               ║
-║      ┌───────────────────┼───────────────────────┐                      ║
-║      ▼                   ▼                       ▼                      ║
-║  ┌──────────┐    ┌──────────────┐    ┌──────────────────┐              ║
-║  │ Task 1:  │    │ Task 2:      │    │ Task 3:          │              ║
-║  │ S3 Sensor│───→│ Data Validate│───→│ Feature Eng      │              ║
-║  │(new data)│    │ Great Expect.│    │ Spark on EKS     │              ║
-║  │          │    │ Schema+Nulls │    │ → Feast Store    │              ║
-║  │ S3 raw/  │    │ → S3 valid/  │    │ → S3 features/   │              ║
-║  └──────────┘    └──────────────┘    └────────┬─────────┘              ║
-║                                               │                        ║
-║                                               ▼                        ║
-║  ┌────────────────────────────────────────────────────────────┐        ║
-║  │  Task 4: KUBEFLOW PIPELINE (KFP) – Triggered by Airflow   │        ║
-║  │  Namespace: kubeflow · EKS Cluster                         │        ║
-║  │                                                            │        ║
-║  │  ┌────────────┐  ┌──────────────┐  ┌────────────────────┐ │        ║
-║  │  │ Component: │  │ Component:   │  │ Component:         │ │        ║
-║  │  │ Train      │→ │ Evaluate     │→ │ Register Model     │ │        ║
-║  │  │            │  │              │  │                    │ │        ║
-║  │  │ GPU Pod    │  │ CPU Pod      │  │ CPU Pod            │ │        ║
-║  │  │ p3.2xlarge │  │              │  │                    │ │        ║
-║  │  │            │  │ vs Champion  │  │ MLflow Registry    │ │        ║
-║  │  │ MLflow log │  │ NDCG, MRR   │  │ stage="Staging"    │ │        ║
-║  │  │ params +   │  │ Evidently   │  │ tag: git_sha,      │ │        ║
-║  │  │ metrics +  │  │ drift check  │  │ dataset_ver,       │ │        ║
-║  │  │ artifacts  │  │ PSI, KS test │  │ training_date      │ │        ║
-║  │  └────────────┘  └──────────────┘  └────────────────────┘ │        ║
-║  │                       │                      │             │        ║
-║  │                  Gate: PASS?              If PASS:          │        ║
-║  │                  ┌────┴────┐             SNS → Slack       │        ║
-║  │                 FAIL     PASS                              │        ║
-║  │                  │         │                               │        ║
-║  │             SNS Alert    Continue                          │        ║
-║  │             Abort DAG   to Task 5                          │        ║
-║  └────────────────────────────────────────────────────────────┘        ║
-║                                               │                        ║
-║                                               ▼                        ║
-║  ┌────────────────────────────────────────────────────────────┐        ║
-║  │  Task 5: BATCH INFERENCE (Spark on EKS)                    │        ║
-║  │  ├── Lee modelo: MLflow stage="Production"                 │        ║
-║  │  ├── Lee features: Feast offline + online                  │        ║
-║  │  ├── Genera predicciones:                                  │        ║
-║  │  │   ├── Recomendador: TOP-20 por usuario → Redis + S3     │        ║
-║  │  │   └── Buscador: embeddings todos productos → OpenSearch │        ║
-║  │  ├── Escribe: ElastiCache Redis (TTL) + Redshift (audit)   │        ║
-║  │  └── Log: duration, coverage, error count → Prometheus     │        ║
-║  └────────────────────────────────────────────────────────────┘        ║
-║                                                                          ║
-║  ALMACENAMIENTO DE ARTIFACTS                                             ║
-║  ──────────────────────────────                                          ║
-║  ┌────────────────────────────────────────────────────────────┐        ║
-║  │  S3 Buckets                   │  MLflow Tracking Server    │        ║
-║  │  ├── dsrpmart-data/raw/       │  ├── Experiments           │        ║
-║  │  ├── dsrpmart-data/validated/ │  ├── Runs (params, metrics)│        ║
-║  │  ├── dsrpmart-data/processed/ │  ├── Artifacts (S3 backed) │        ║
-║  │  ├── dsrpmart-features/       │  └── Model Registry         │        ║
-║  │  ├── dsrpmart-models/         │      ├── Staging            │        ║
-║  │  └── dsrpmart-mlflow-artifacts│      ├── Production         │        ║
-║  └────────────────────────────────┴───────────────────────────┘        ║
-║                                                                          ║
-╚══════════════════════════════════════════════════════════════════════════╝
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '12px', 'fontFamily': 'Segoe UI, Arial', 'lineColor': '#64748b'}}}%%
+flowchart TD
+
+    %% ── MWAA Scheduler ──────────────────────────────────────────────
+    subgraph MWAA["☁️ Amazon MWAA — Managed Airflow"]
+        direction LR
+        SCHED["<b>DAG Scheduler</b><br/>product_recommender: daily 00:00 UTC<br/>search_engine: daily 02:00 UTC"]
+    end
+
+    %% ── Data Ingestion & Validation ─────────────────────────────────
+    subgraph INGEST["📥 Data Ingestion & Validation"]
+        direction LR
+        S3SENSOR["<b>S3 Sensor</b><br/>Detect new data<br/><i>s3://dsrpmart-data/raw/</i>"]
+        VALIDATE["<b>Data Validation</b><br/>Great Expectations<br/>Schema + Nulls + Quality<br/><i>→ s3://…/validated/</i>"]
+        S3SENSOR ==> VALIDATE
+    end
+
+    %% ── Feature Engineering ─────────────────────────────────────────
+    subgraph FEAT["⚙️ Feature Engineering"]
+        direction LR
+        SPARK_FE["<b>Spark on EKS</b><br/>Transform & compute<br/>features at scale"]
+        FEAST["<b>Feast Feature Store</b><br/>Online + Offline store<br/><i>→ s3://…/features/</i>"]
+        SPARK_FE ==> FEAST
+    end
+
+    %% ── KFP Training Pipeline ───────────────────────────────────────
+    subgraph KFP["🔬 Kubeflow Pipeline — EKS Cluster"]
+        direction LR
+        TRAIN["<b>Train Model</b><br/>GPU Pod · p3.2xlarge<br/>MLflow log params,<br/>metrics & artifacts"]
+        EVAL["<b>Evaluate</b><br/>CPU Pod<br/>vs Champion model<br/>NDCG · MRR · Evidently<br/>PSI · KS drift test"]
+        REGISTER["<b>Register Model</b><br/>CPU Pod<br/>MLflow Registry<br/>stage = Staging<br/>tags: git_sha,<br/>dataset_ver, date"]
+        TRAIN ==> EVAL ==> REGISTER
+    end
+
+    %% ── Decision Gate ───────────────────────────────────────────────
+    GATE{"<b>Quality Gate</b><br/>PASS / FAIL"}
+    FAIL_NODE["<b>FAIL</b><br/>SNS Alert → Slack<br/>Abort DAG"]
+    PASS_NODE["<b>PASS</b><br/>SNS → Slack<br/>Continue"]
+
+    %% ── Batch Inference ─────────────────────────────────────────────
+    subgraph BATCH["🚀 Batch Inference — Spark on EKS"]
+        direction LR
+        INFER["<b>Batch Predict</b><br/>Load model: MLflow Production<br/>Load features: Feast"]
+        REDIS["<b>Redis</b><br/>TOP-20 recs/user<br/>ElastiCache TTL"]
+        S3OUT["<b>S3 + Redshift</b><br/>Predictions audit log"]
+        OSEARCH["<b>OpenSearch</b><br/>Product embeddings<br/>search index"]
+        INFER ==> REDIS
+        INFER ==> S3OUT
+        INFER ==> OSEARCH
+    end
+
+    %% ── Artifact Storage ────────────────────────────────────────────
+    subgraph STORE["🗄️ Artifact Storage"]
+        direction LR
+        S3BUCK["<b>S3 Buckets</b><br/>dsrpmart-data/raw<br/>dsrpmart-data/validated<br/>dsrpmart-data/processed<br/>dsrpmart-features<br/>dsrpmart-models<br/>dsrpmart-mlflow-artifacts"]
+        MLFLOW["<b>MLflow Tracking Server</b><br/>Experiments · Runs<br/>Params · Metrics<br/>Artifacts (S3-backed)<br/>Model Registry<br/>Staging → Production"]
+        S3BUCK ~~~ MLFLOW
+    end
+
+    %% ── Main Flow ───────────────────────────────────────────────────
+    MWAA ==> INGEST
+    INGEST ==> FEAT
+    FEAT ==> KFP
+    KFP ==> GATE
+    GATE ==> PASS_NODE
+    GATE ==> FAIL_NODE
+    PASS_NODE ==> BATCH
+
+    %% ── Secondary Connections ───────────────────────────────────────
+    TRAIN -.-> MLFLOW
+    REGISTER -.-> MLFLOW
+    VALIDATE -.-> S3BUCK
+    SPARK_FE -.-> S3BUCK
+    INFER -.-> MLFLOW
+
+    %% ── Styles ──────────────────────────────────────────────────────
+    classDef aws fill:#232f3e,stroke:#ff9900,color:#ff9900,stroke-width:2px
+    classDef task fill:#2b6cb0,stroke:#2c5282,color:#fff,stroke-width:1.5px
+    classDef model fill:#276749,stroke:#1a4731,color:#fff,stroke-width:1.5px
+    classDef gate fill:#fef3c7,stroke:#d97706,color:#92400e,stroke-width:2px
+    classDef fail fill:#b91c1c,stroke:#991b1b,color:#fff,stroke-width:1.5px
+    classDef serve fill:#6b21a8,stroke:#581c87,color:#fff,stroke-width:1.5px
+    classDef storage fill:#1e3a5f,stroke:#0f2942,color:#e2e8f0,stroke-width:1.5px
+
+    class SCHED aws
+    class S3SENSOR,VALIDATE,SPARK_FE,FEAST task
+    class TRAIN,EVAL,REGISTER model
+    class GATE gate
+    class FAIL_NODE fail
+    class PASS_NODE model
+    class INFER,REDIS,S3OUT,OSEARCH serve
+    class S3BUCK,MLFLOW storage
+
+    style MWAA fill:#f8fafc,stroke:#ff9900,stroke-width:2px,rx:10
+    style INGEST fill:#f0f9ff,stroke:#2b6cb0,stroke-width:1.5px,rx:10
+    style FEAT fill:#f0fff4,stroke:#276749,stroke-width:1.5px,rx:10
+    style KFP fill:#f0fff4,stroke:#276749,stroke-width:1.5px,rx:10
+    style BATCH fill:#faf5ff,stroke:#6b21a8,stroke-width:1.5px,rx:10
+    style STORE fill:#f1f5f9,stroke:#1e3a5f,stroke-width:1.5px,rx:10
 ```
 
 ### 10.b Arquitectura de la Solución Completa (AWS)
 
-```
-╔══════════════════════════════════════════════════════════════════════════╗
-║               ARQUITECTURA AWS CLOUD-NATIVE – DSRPMart                   ║
-╠══════════════════════════════════════════════════════════════════════════╣
-║                                                                          ║
-║                    ┌──────────────────────────────────┐                  ║
-║                    │  DSRPMart Mobile App / Web App    │                  ║
-║                    │  (React Native / React + Next.js) │                  ║
-║                    └──────────────┬───────────────────┘                  ║
-║                                   │                                      ║
-║                                   ▼                                      ║
-║                    ┌──────────────────────────────────┐                  ║
-║                    │ Amazon API Gateway + AWS WAF       │                  ║
-║                    │ (Auth: Cognito, Rate Limit, HTTPS) │                  ║
-║                    └──────────┬────────┬──────────────┘                  ║
-║                               │        │                                 ║
-║              ┌────────────────┘        └──────────────────┐             ║
-║              ▼                                            ▼             ║
-║  ┌───────────────────────────┐          ┌───────────────────────────┐   ║
-║  │  Recommendations Service  │          │  Search Service           │   ║
-║  │  (FastAPI · EKS Pod)      │          │  (FastAPI · EKS Pod)      │   ║
-║  │  ├── GET /recs/:user_id   │          │  ├── GET /search?q=...    │   ║
-║  │  └── Redis lookup         │          │  ├── Query preprocess     │   ║
-║  │      key: user:{id}:recs  │          │  ├── BM25+KNN retrieval   │   ║
-║  └───────────┬───────────────┘          │  ├── LightGBM ranking     │   ║
-║              │                          │  └── Post-processing      │   ║
-║              │                          └──────────┬────────────────┘   ║
-║              │                                     │                    ║
-║              ▼                                     ▼                    ║
-║  ┌────────────────────────────────────────────────────────────────────┐ ║
-║  │                    Amazon ElastiCache (Redis 7.x)                   │ ║
-║  │  ├── Cluster mode: 3 shards, 2 replicas each                       │ ║
-║  │  ├── Recs:   user:{id}:recs → JSON [product_ids] TTL=6h           │ ║
-║  │  ├── Search: query:{hash} → JSON [results]        TTL=30min       │ ║
-║  │  └── Feast:  feast:online:{entity} → feature_vector               │ ║
-║  └────────────────────────────────────────────────────────────────────┘ ║
-║       ▲ (writes)                         ▲ (KNN queries)               ║
-║       │                                  │                              ║
-║  ┌────┴───────────────────┐     ┌────────┴──────────────────────────┐  ║
-║  │ BATCH INFERENCE LAYER  │     │ Amazon OpenSearch Service          │  ║
-║  │ Spark on EKS           │     │ ├── Index: products-v{N}           │  ║
-║  │ (Spark Operator)       │     │ │   ├── BM25 text fields           │  ║
-║  │ ├── scheduled 4x/day   │     │ │   ├── KNN vector (384d, HNSW)    │  ║
-║  │ ├── reads MLflow model │     │ │   └── metadata (price,category)  │  ║
-║  │ ├── reads Feast features│     │ ├── Blue-green index swap          │  ║
-║  │ └── writes Redis + S3  │     │ └── 3 data nodes (r6g.xlarge)      │  ║
-║  └────────────────────────┘     └───────────────────────────────────┘  ║
-║       ▲                                  ▲                              ║
-║       │                                  │                              ║
-║  ═════╪══════════════════════════════════╪══════════════════════════   ║
-║       │         ML TRAINING PLATFORM     │                              ║
-║  ═════╪══════════════════════════════════╪══════════════════════════   ║
-║       │                                  │                              ║
-║  ┌────┴──────────────────────────────────┴───────────────────────────┐ ║
-║  │                    Amazon EKS Cluster (v1.29)                      │ ║
-║  │                    Managed Node Groups + Karpenter                  │ ║
-║  │                                                                    │ ║
-║  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐ │ ║
-║  │  │ Namespace:   │  │ Namespace:   │  │ Namespace:               │ │ ║
-║  │  │  kubeflow    │  │  airflow     │  │  mlflow                  │ │ ║
-║  │  │              │  │              │  │                          │ │ ║
-║  │  │ KFP Pipelines│  │ MWAA Agent   │  │ Tracking Server          │ │ ║
-║  │  │ Katib (HPO)  │  │ DAG sync     │  │ Model Registry           │ │ ║
-║  │  │ Notebooks    │  │ from S3      │  │ Backend: RDS PostgreSQL  │ │ ║
-║  │  └──────────────┘  └──────────────┘  │ Artifacts: S3             │ │ ║
-║  │                                      └──────────────────────────┘ │ ║
-║  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐ │ ║
-║  │  │ Namespace:   │  │ Namespace:   │  │ Namespace:               │ │ ║
-║  │  │  feast       │  │  spark       │  │  monitoring              │ │ ║
-║  │  │              │  │              │  │                          │ │ ║
-║  │  │ Feast Server │  │ Spark Oper.  │  │ Prometheus               │ │ ║
-║  │  │ Online: Redis│  │ Driver/Exec  │  │ Grafana                  │ │ ║
-║  │  │ Offline: S3  │  │ Spot pools   │  │ Alertmanager             │ │ ║
-║  │  └──────────────┘  └──────────────┘  └──────────────────────────┘ │ ║
-║  │                                                                    │ ║
-║  │  ┌──────────────┐  ┌──────────────────────────────────┐           │ ║
-║  │  │ Namespace:   │  │ GitOps Controller:               │           │ ║
-║  │  │  serving     │  │  ArgoCD                          │           │ ║
-║  │  │              │  │  ├── Syncs: dsrpmart-infra repo  │           │ ║
-║  │  │ Rec Service  │  │  ├── Auto-heal on drift          │           │ ║
-║  │  │ Search Svc   │  │  └── Rollback on failure         │           │ ║
-║  │  └──────────────┘  └──────────────────────────────────┘           │ ║
-║  └────────────────────────────────────────────────────────────────────┘ ║
-║       ▲                                                                ║
-║       │                                                                ║
-║  ═════╪════════════════════════════════════════════════════════════   ║
-║       │                   DATA LAYER                                   ║
-║  ═════╪════════════════════════════════════════════════════════════   ║
-║       │                                                                ║
-║  ┌────┴──────────────────────────────────────────────────────────────┐ ║
-║  │                                                                    │ ║
-║  │  ┌──────────────────┐   ┌──────────────┐  ┌────────────────────┐  │ ║
-║  │  │ Amazon S3         │   │ Amazon       │  │ Amazon Kinesis     │  │ ║
-║  │  │ ├── raw/          │   │ Redshift     │  │ Data Streams       │  │ ║
-║  │  │ ├── validated/    │   │ Serverless   │  │ ├── user_events    │  │ ║
-║  │  │ ├── processed/    │   │              │  │ ├── search_logs    │  │ ║
-║  │  │ ├── features/     │   │ DWH + Anal.  │  │ └── Firehose → S3  │  │ ║
-║  │  │ └── models/       │   │ A/B analysis │  │                    │  │ ║
-║  │  └──────────────────┘   └──────────────┘  └────────────────────┘  │ ║
-║  │                                                                    │ ║
-║  │  ┌──────────────────┐   ┌──────────────┐  ┌────────────────────┐  │ ║
-║  │  │ Amazon RDS       │   │ AWS DMS       │  │ AWS Glue           │  │ ║
-║  │  │ (PostgreSQL)     │   │ CDC → S3      │  │ Data Catalog       │  │ ║
-║  │  │ Catálogo prod.   │   │ Catálogo sync │  │ Schema discovery   │  │ ║
-║  │  └──────────────────┘   └──────────────┘  └────────────────────┘  │ ║
-║  │                                                                    │ ║
-║  └────────────────────────────────────────────────────────────────────┘ ║
-║                                                                          ║
-║  ═══════════════════════════════════════════════════════════════════    ║
-║                          SECURITY LAYER                                  ║
-║  ═══════════════════════════════════════════════════════════════════    ║
-║  ├── IRSA: IAM Roles for Service Accounts (pods K8s)                    ║
-║  ├── AWS Secrets Manager: DB creds, API keys (auto-rotation)            ║
-║  ├── KMS: encryption at rest (S3, RDS, ElastiCache, Redshift)           ║
-║  ├── VPC: Private subnets for EKS, NAT for egress                       ║
-║  ├── WAF: Protection on API Gateway                                      ║
-║  ├── ECR: Image scanning (Trivy) + cosign signing                        ║
-║  └── CloudTrail: Audit log de todas las acciones AWS                     ║
-║                                                                          ║
-╚══════════════════════════════════════════════════════════════════════════╝
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '11px', 'fontFamily': 'Segoe UI, Arial', 'lineColor': '#64748b'}}}%%
+flowchart TD
+
+    %% ── APP LAYER ──────────────────────────────────────────────
+    APP["<b>DSRPMart Mobile / Web App</b><br/>React Native · React + Next.js"]
+    GW["<b>Amazon API Gateway + AWS WAF</b><br/>Auth: Cognito · Rate Limit · HTTPS"]
+
+    APP ==> GW
+
+    %% ── SERVING LAYER ──────────────────────────────────────────
+    subgraph SERVING["  SERVING LAYER  "]
+        direction LR
+        REC["<b>Recommendations Service</b><br/>FastAPI · EKS Pod<br/>GET /recs/:user_id<br/>Redis lookup → user:{id}:recs"]
+        SEARCH["<b>Search Service</b><br/>FastAPI · EKS Pod<br/>GET /search?q=…<br/>BM25 + KNN retrieval · LightGBM ranking"]
+    end
+
+    GW ==> REC
+    GW ==> SEARCH
+
+    %% ── CACHE + INDEX ──────────────────────────────────────────
+    subgraph CACHE_IDX["  CACHE + INDEX  "]
+        direction LR
+        REDIS["<b>Amazon ElastiCache — Redis 7.x</b><br/>3 shards · 2 replicas each<br/>Recs: user:{id}:recs → JSON TTL=6h<br/>Search: query:{hash} → JSON TTL=30min<br/>Feast: feast:online:{entity} → features"]
+        OS["<b>Amazon OpenSearch Service</b><br/>Index: products-v{N}<br/>BM25 text + KNN 384d HNSW<br/>Blue-green swap · 3× r6g.xlarge"]
+    end
+
+    REC ==> REDIS
+    SEARCH ==> REDIS
+    SEARCH -.->|KNN queries| OS
+
+    %% ── BATCH INFERENCE ────────────────────────────────────────
+    subgraph BATCH["  BATCH INFERENCE  "]
+        SPARK["<b>Spark Batch Inference</b><br/>Spark on EKS · Spark Operator<br/>Scheduled 4×/day · Spot instances<br/>Reads MLflow model + Feast features<br/>Writes → Redis + S3"]
+    end
+
+    SPARK ==>|writes| REDIS
+    SPARK -.->|index update| OS
+
+    %% ── EKS CLUSTER ────────────────────────────────────────────
+    subgraph EKS["  Amazon EKS Cluster v1.29 — Managed Node Groups + Karpenter  "]
+        direction TB
+        subgraph ROW1["  "]
+            direction LR
+            NS_KF["<b>kubeflow</b><br/>KFP Pipelines · Katib HPO<br/>Notebooks"]
+            NS_AF["<b>airflow</b><br/>MWAA Agent<br/>DAG sync from S3"]
+            NS_ML["<b>mlflow</b><br/>Tracking Server · Model Registry<br/>Backend: RDS PostgreSQL<br/>Artifacts: S3"]
+        end
+        subgraph ROW2["  "]
+            direction LR
+            NS_FE["<b>feast</b><br/>Feast Server<br/>Online: Redis · Offline: S3"]
+            NS_SP["<b>spark</b><br/>Spark Operator<br/>Driver/Exec · Spot pools"]
+            NS_MO["<b>monitoring</b><br/>Prometheus · Grafana<br/>Alertmanager"]
+        end
+        subgraph ROW3["  "]
+            direction LR
+            NS_SV["<b>serving</b><br/>Rec Service · Search Svc"]
+            NS_AR["<b>argocd</b><br/>GitOps Controller<br/>Syncs dsrpmart-infra repo<br/>Auto-heal · Rollback"]
+        end
+    end
+
+    EKS -.-> SERVING
+    EKS -.-> BATCH
+
+    %% ── DATA LAYER ─────────────────────────────────────────────
+    subgraph DATA["  DATA LAYER  "]
+        direction LR
+        S3["<b>Amazon S3</b><br/>raw/ · validated/ · processed/<br/>features/ · models/"]
+        RS["<b>Amazon Redshift</b><br/>Serverless<br/>DWH + A/B analysis"]
+        KIN["<b>Amazon Kinesis</b><br/>Data Streams<br/>user_events · search_logs<br/>Firehose → S3"]
+        RDS["<b>Amazon RDS</b><br/>PostgreSQL<br/>Catálogo de productos"]
+        DMS["<b>AWS DMS</b><br/>CDC → S3<br/>Catálogo sync"]
+        GLUE["<b>AWS Glue</b><br/>Data Catalog<br/>Schema discovery"]
+    end
+
+    EKS ==> DATA
+    SPARK -.-> S3
+
+    %% ── SECURITY BAR ───────────────────────────────────────────
+    SEC["<b>SECURITY LAYER</b><br/>IRSA · Secrets Manager · KMS · VPC · WAF · ECR (Trivy + cosign) · CloudTrail"]
+
+    DATA ~~~ SEC
+
+    %% ── STYLES ─────────────────────────────────────────────────
+    classDef app fill:#1e3a5f,stroke:#0f2942,color:#e2e8f0,stroke-width:2px
+    classDef aws fill:#232f3e,stroke:#ff9900,color:#ff9900,stroke-width:2px
+    classDef svc fill:#6b21a8,stroke:#581c87,color:#fff,stroke-width:1.5px
+    classDef redis fill:#dc2626,stroke:#b91c1c,color:#fff,stroke-width:1.5px
+    classDef opensearch fill:#1e40af,stroke:#1e3a8a,color:#fff,stroke-width:1.5px
+    classDef batch fill:#2b6cb0,stroke:#2c5282,color:#fff,stroke-width:1.5px
+    classDef ns fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-width:1px
+    classDef data fill:#276749,stroke:#1a4731,color:#fff,stroke-width:1.5px
+    classDef security fill:#92400e,stroke:#78350f,color:#fef3c7,stroke-width:2px
+
+    class APP app
+    class GW aws
+    class REC,SEARCH svc
+    class REDIS redis
+    class OS opensearch
+    class SPARK batch
+    class NS_KF,NS_AF,NS_ML,NS_FE,NS_SP,NS_MO,NS_SV,NS_AR ns
+    class S3,RS,KIN,RDS,DMS,GLUE data
+    class SEC security
+
+    style SERVING fill:#faf5ff,stroke:#6b21a8,stroke-width:1.5px,rx:10
+    style CACHE_IDX fill:#fef2f2,stroke:#dc2626,stroke-width:1.5px,rx:10
+    style BATCH fill:#eff6ff,stroke:#2b6cb0,stroke-width:1.5px,rx:10
+    style EKS fill:#f1f5f9,stroke:#ff9900,stroke-width:2px,rx:10
+    style ROW1 fill:transparent,stroke:none
+    style ROW2 fill:transparent,stroke:none
+    style ROW3 fill:transparent,stroke:none
+    style DATA fill:#f0fff4,stroke:#276749,stroke-width:1.5px,rx:10
 ```
 
 ### 10.c CI/CD Despliegue de Modelo
 
-```
-╔══════════════════════════════════════════════════════════════════════════╗
-║          CI/CD DESPLIEGUE DE MODELO – GitHub Actions + ArgoCD            ║
-╠══════════════════════════════════════════════════════════════════════════╣
-║                                                                          ║
-║  ┌──────────────────────────────────────────────────────────────────┐   ║
-║  │  DATA SCIENTIST / ML ENGINEER                                    │   ║
-║  │  ├── Desarrolla en branch feature/model-improvement-v2           │   ║
-║  │  ├── Experimenta en JupyterHub (Kubeflow Notebooks on EKS)      │   ║
-║  │  ├── Registra runs en MLflow: experiment_name, params, metrics   │   ║
-║  │  ├── DVC add: datasets versionados en S3                         │   ║
-║  │  ├── git commit + git push → Pull Request a develop              │   ║
-║  │  └── PR description: MLflow run_id, métricas, changelog          │   ║
-║  └────────────────────────────────┬─────────────────────────────────┘   ║
-║                                   │                                      ║
-║                                   ▼                                      ║
-║  ┌──────────────────────────────────────────────────────────────────┐   ║
-║  │  GITHUB ACTIONS – CI PIPELINE (Triggered on PR)                  │   ║
-║  │                                                                  │   ║
-║  │  Job 1: code-quality                                             │   ║
-║  │  ├── ruff check . (lint Python)                                  │   ║
-║  │  ├── mypy (type checking)                                        │   ║
-║  │  └── bandit (security scan Python)                                │   ║
-║  │                                                                  │   ║
-║  │  Job 2: tests                                                    │   ║
-║  │  ├── pytest tests/unit/ --cov --cov-fail-under=80                │   ║
-║  │  ├── pytest tests/integration/ (mock AWS services with moto)     │   ║
-║  │  └── Great Expectations: data contract tests (sample data)       │   ║
-║  │                                                                  │   ║
-║  │  Job 3: reproducibility                                          │   ║
-║  │  ├── dvc repro --dry (verify pipeline is reproducible)           │   ║
-║  │  └── dvc diff (show data/model changes)                          │   ║
-║  │                                                                  │   ║
-║  │  STATUS: ✅ All checks pass → Ready for review                  │   ║
-║  └────────────────────────────────┬─────────────────────────────────┘   ║
-║                                   │                                      ║
-║                         (PR approved + merged to develop)                ║
-║                                   │                                      ║
-║                                   ▼                                      ║
-║  ┌──────────────────────────────────────────────────────────────────┐   ║
-║  │  GITHUB ACTIONS – CD PIPELINE STAGING (on merge to develop)      │   ║
-║  │                                                                  │   ║
-║  │  Job 1: build-push                                               │   ║
-║  │  ├── docker build --platform linux/amd64                          │   ║
-║  │  ├── trivy image scan (vulnerabilities)                           │   ║
-║  │  ├── docker push → Amazon ECR: {repo}:{git-sha}                  │   ║
-║  │  └── cosign sign (supply chain attestation)                       │   ║
-║  │                                                                  │   ║
-║  │  Job 2: deploy-staging                                           │   ║
-║  │  ├── Update helm/values-staging.yaml → image.tag: {git-sha}      │   ║
-║  │  ├── Commit + push to dsrpmart-infra (staging branch)            │   ║
-║  │  └── ArgoCD auto-syncs staging namespace                          │   ║
-║  │                                                                  │   ║
-║  │  Job 3: ml-pipeline-staging                                      │   ║
-║  │  ├── Trigger KFP Pipeline on staging EKS cluster                 │   ║
-║  │  ├── Wait for pipeline completion (timeout: 2h)                  │   ║
-║  │  ├── Fetch metrics from MLflow API                                │   ║
-║  │  ├── Compare vs. current Production Champion:                     │   ║
-║  │  │   ├── table: NDCG, MRR, HitRate, Coverage                     │   ║
-║  │  │   ├── Evidently drift report → S3                              │   ║
-║  │  │   └── Auto-comment PR with comparison table                    │   ║
-║  │  └── IF metrics PASS → MLflow stage = "Staging" ✅               │   ║
-║  │       IF metrics FAIL → Block promotion, Slack alert ❌           │   ║
-║  └────────────────────────────────┬─────────────────────────────────┘   ║
-║                                   │                                      ║
-║                  (Promote develop → main via Release PR)                 ║
-║                                   │                                      ║
-║                                   ▼                                      ║
-║  ┌──────────────────────────────────────────────────────────────────┐   ║
-║  │  GITHUB ACTIONS – CD PIPELINE PRODUCTION (on merge to main)      │   ║
-║  │                                                                  │   ║
-║  │  Job 1: production-deploy                                        │   ║
-║  │  ├── Tag Docker image: :{git-sha} + :v{semver}                   │   ║
-║  │  ├── Update helm/values-prod.yaml → image.tag: {git-sha}         │   ║
-║  │  ├── Commit + push to dsrpmart-infra (prod branch)               │   ║
-║  │  └── Create GitHub Release with changelog                         │   ║
-║  │                                                                  │   ║
-║  │  ┌────────────────────────────────────────────────────────┐      │   ║
-║  │  │  ARGOCD (GitOps Controller on EKS)                      │      │   ║
-║  │  │  ├── Detects change in dsrpmart-infra/prod               │      │   ║
-║  │  │  ├── Reconciles EKS prod namespace:                      │      │   ║
-║  │  │  │   ├── Rolling update pods (zero downtime)             │      │   ║
-║  │  │  │   ├── readinessProbe + livenessProbe checks           │      │   ║
-║  │  │  │   └── Progressive rollout (canary 10% → 50% → 100%)  │      │   ║
-║  │  │  ├── IF health check fails → automatic rollback          │      │   ║
-║  │  │  └── Slack: #ml-deployments "Deploy v{X} complete ✅"    │      │   ║
-║  │  └────────────────────────────────────────────────────────┘      │   ║
-║  │                                                                  │   ║
-║  │  Job 2: post-deploy-validation                                   │   ║
-║  │  ├── Smoke tests: call /recs and /search endpoints              │   ║
-║  │  ├── MLflow: transition model Staging → Production               │   ║
-║  │  ├── Enable shadow mode for Challenger (if applicable)           │   ║
-║  │  └── Activate monitoring dashboards for new version              │   ║
-║  └──────────────────────────────────────────────────────────────────┘   ║
-║                                                                          ║
-║  ROLLBACK AUTOMÁTICO                                                     ║
-║  ─────────────────                                                       ║
-║  ┌──────────────────────────────────────────────────────────────────┐   ║
-║  │  Trigger:                                                        │   ║
-║  │  ├── Prometheus alert: error_rate > 1% for 5 min                 │   ║
-║  │  ├── Prometheus alert: latency p99 > SLA for 10 min              │   ║
-║  │  └── Manual: MLOps engineer via ArgoCD UI                        │   ║
-║  │                                                                  │   ║
-║  │  Actions:                                                        │   ║
-║  │  ├── ArgoCD: git revert values-prod.yaml → previous SHA         │   ║
-║  │  ├── K8s: pods roll back to previous image                       │   ║
-║  │  ├── MLflow: previous model version → stage="Production"        │   ║
-║  │  ├── Redis: batch job rewrites predictions from previous model   │   ║
-║  │  ├── PagerDuty: page on-call MLOps with runbook link            │   ║
-║  │  └── Post-incident: blameless post-mortem within 48h            │   ║
-║  └──────────────────────────────────────────────────────────────────┘   ║
-║                                                                          ║
-╚══════════════════════════════════════════════════════════════════════════╝
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '12px', 'fontFamily': 'Segoe UI, Arial', 'lineColor': '#64748b'}}}%%
+flowchart TD
+
+    %% ── DEV ──────────────────────────────────────────────────
+    subgraph DEV["🧑‍💻 DEV — Data Scientist / ML Engineer"]
+        direction TB
+        D1["<b>Branch</b><br/>feature/model-improvement-v2"]
+        D2["<b>Experiment</b><br/>JupyterHub · Kubeflow Notebooks on EKS"]
+        D3["<b>Track</b><br/>MLflow runs: experiment, params, metrics"]
+        D4["<b>Version Data</b><br/>DVC add → datasets en S3"]
+        D5["<b>Push</b><br/>git commit + push → PR a develop<br/>PR: run_id, métricas, changelog"]
+        D1 --> D2 --> D3 --> D4 --> D5
+    end
+
+    %% ── CI ───────────────────────────────────────────────────
+    subgraph CI["⚙️ CI — GitHub Actions on PR"]
+        direction TB
+        CI1["<b>Code Quality</b><br/>ruff check · mypy · bandit"]
+        CI2["<b>Tests</b><br/>pytest 80 % cov · integration moto<br/>Great Expectations data contracts"]
+        CI3["<b>Reproducibility</b><br/>dvc repro --dry · dvc diff"]
+        CI4(["✅ All checks pass → Ready for review"])
+        CI1 --> CI2 --> CI3 --> CI4
+    end
+
+    %% ── CD STAGING ───────────────────────────────────────────
+    subgraph CD_STG["🟡 CD STAGING — on merge develop"]
+        direction TB
+        S1["<b>Build & Push</b><br/>Docker → ECR · Trivy scan · cosign sign"]
+        S2["<b>Deploy Staging</b><br/>Helm values-staging · ArgoCD auto-sync"]
+        S3["<b>ML Pipeline Staging</b><br/>KFP train · Metrics vs Champion<br/>NDCG, MRR, HitRate, Coverage"]
+        S4["<b>Validate</b><br/>Evidently drift report → S3<br/>MLflow stage = Staging"]
+        S5(["✅ Metrics PASS → promote"])
+        S6(["❌ Metrics FAIL → Slack alert, block"])
+        S1 --> S2 --> S3 --> S4
+        S4 --> S5
+        S4 -.-> S6
+    end
+
+    %% ── CD PRODUCTION ────────────────────────────────────────
+    subgraph CD_PRD["🟢 CD PRODUCTION — on merge main"]
+        direction TB
+        P1["<b>Tag & Push</b><br/>:sha · :semver · GitHub Release"]
+        subgraph ARGO["ArgoCD GitOps Controller"]
+            direction TB
+            A1["Detect change in dsrpmart-infra/prod"]
+            A2["Rolling update pods — zero downtime"]
+            A3["readiness + liveness probes"]
+            A4["Canary rollout 10 % → 50 % → 100 %"]
+            A5["Slack #ml-deployments ✅"]
+            A1 --> A2 --> A3 --> A4 --> A5
+        end
+        P2["<b>Post-Deploy</b><br/>Smoke tests /recs & /search<br/>MLflow Staging → Production<br/>Shadow mode Challenger · Dashboards"]
+        P1 --> ARGO --> P2
+    end
+
+    %% ── ROLLBACK ─────────────────────────────────────────────
+    subgraph RB["🔴 ROLLBACK AUTOMÁTICO"]
+        direction TB
+        R1["<b>Triggers</b><br/>error_rate > 1 % (5 min)<br/>latency p99 > SLA (10 min)<br/>Manual: ArgoCD UI"]
+        R2["<b>Actions</b><br/>git revert values-prod → prev SHA<br/>K8s pods rollback · MLflow revert<br/>Redis rewrite predictions<br/>PagerDuty on-call + runbook"]
+        R3["Post-incident: blameless post-mortem 48 h"]
+        R1 --> R2 --> R3
+    end
+
+    %% ── MAIN FLOW ────────────────────────────────────────────
+    D5 ==> CI
+    CI4 ==>|"PR approved + merge develop"| S1
+    S5 ==>|"Release PR → merge main"| P1
+    P2 -.->|"health check fail / alert"| R1
+
+    %% ── STYLES ───────────────────────────────────────────────
+    classDef dev  fill:#1e3a5f,stroke:#0f2942,color:#e2e8f0,stroke-width:2px
+    classDef ci   fill:#2563eb,stroke:#1d4ed8,color:#fff,stroke-width:1px
+    classDef cd_stg fill:#ca8a04,stroke:#a16207,color:#fff,stroke-width:1px
+    classDef cd_prd fill:#15803d,stroke:#166534,color:#fff,stroke-width:2px
+    classDef rb   fill:#b91c1c,stroke:#991b1b,color:#fff,stroke-width:1px
+
+    class D1,D2,D3,D4,D5 dev
+    class CI1,CI2,CI3,CI4 ci
+    class S1,S2,S3,S4,S5,S6 cd_stg
+    class P1,P2,A1,A2,A3,A4,A5 cd_prd
+    class R1,R2,R3 rb
+
+    style DEV    fill:#0f172a,stroke:#1e3a5f,stroke-width:2px,rx:10,color:#e2e8f0
+    style CI     fill:#eff6ff,stroke:#2563eb,stroke-width:2px,rx:10,color:#1e3a8a
+    style CD_STG fill:#fefce8,stroke:#ca8a04,stroke-width:2px,rx:10,color:#713f12
+    style CD_PRD fill:#f0fdf4,stroke:#15803d,stroke-width:2px,rx:10,color:#14532d
+    style ARGO   fill:#dcfce7,stroke:#166534,stroke-width:1px,rx:8,color:#14532d
+    style RB     fill:#fef2f2,stroke:#b91c1c,stroke-width:2px,rx:10,color:#7f1d1d
 ```
 
 ---
@@ -1740,64 +1793,65 @@ flowchart TD
 
 ### 11.1 Estrategia de Data Drift
 
+#### Detección — Evidently AI · Batch Reports
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '12px', 'fontFamily': 'Segoe UI, Arial', 'lineColor': '#64748b'}}}%%
+flowchart TD
+    DAG["<b>Airflow DAG</b><br>data_drift_monitoring<br>daily 04:00 UTC"]:::dag
+
+    REF[("Reference Data<br>Training dataset<br>feature distributions")]:::source
+    CUR[("Current Data<br>Last 24 h production<br>features · Feast offline")]:::source
+
+    REF --> T1
+    CUR --> T1
+
+    T1["<b>Task 1 — Compute Feature Drift</b><br>PSI · KS Test · Wasserstein Distance"]:::task
+    T1 --> RPT["Evidently HTML Report<br>→ S3 + MLflow run"]:::artifact
+
+    T1 --> T2["<b>Task 2 — Compute Prediction Drift</b><br>Score distribution T vs T-7<br>Top-K product_id PSI<br>Alerta si &gt;20 % items nuevos en Top-10"]:::task
+
+    T2 --> T3["<b>Task 3 — Compute Target Drift</b><br>CTR real vs esperado (cohort semanal)<br>Conversion rate trend (rolling 7 d)<br>Alerta si gap &gt;2 σ vs media histórica"]:::task
+
+    T3 --> T4{"<b>Task 4 — Decision</b><br>Evaluar max PSI"}:::gate
+
+    T4 -->|"PSI ≥ 0.25<br>Drift crítico"| RETRAIN["Trigger Retrain DAG<br>Kubeflow Pipeline"]:::retrain
+    T4 -->|"0.10 ≤ PSI &lt; 0.25<br>Drift moderado"| WARN["Slack Warning<br>#ml-alerts"]:::warning
+    T4 -->|"PSI &lt; 0.10<br>Sin drift"| OK["Log OK<br>Continuar schedule normal"]:::ok
+
+    DAG -.-> T1
+
+    classDef dag fill:#1e3a5f,stroke:#0f2942,color:#e2e8f0,stroke-width:2px,font-weight:bold
+    classDef source fill:#eff6ff,stroke:#2563eb,color:#1e3a8a,stroke-width:1px
+    classDef task fill:#2563eb,stroke:#1d4ed8,color:#fff,stroke-width:2px
+    classDef artifact fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-width:1px,stroke-dasharray:5 5
+    classDef gate fill:#fef3c7,stroke:#d97706,color:#92400e,stroke-width:3px,font-weight:bold
+    classDef retrain fill:#dc2626,stroke:#b91c1c,color:#fff,stroke-width:2px,font-weight:bold
+    classDef warning fill:#f59e0b,stroke:#d97706,color:#fff,stroke-width:2px
+    classDef ok fill:#16a34a,stroke:#15803d,color:#fff,stroke-width:2px
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                    ESTRATEGIA DE DATA DRIFT                          │
-├──────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  DETECCIÓN (Evidently AI – Batch Reports)                            │
-│  ──────────────────────────────────────                              │
-│                                                                      │
-│  ┌─────────────────────────────────────────────────────────────┐    │
-│  │  Airflow DAG: data_drift_monitoring (daily 04:00 UTC)        │    │
-│  │                                                              │    │
-│  │  Task 1: Compute Feature Drift                               │    │
-│  │  ├── Reference: training dataset (feature distributions)     │    │
-│  │  ├── Current: last 24h production features (Feast offline)   │    │
-│  │  ├── Tests por feature:                                      │    │
-│  │  │   ├── PSI (Population Stability Index)                    │    │
-│  │  │   │   └── < 0.10: sin drift │ 0.10-0.25: warning │ >0.25:│    │
-│  │  │   │       alert + trigger retrain                         │    │
-│  │  │   ├── KS Test (Kolmogorov-Smirnov)                       │    │
-│  │  │   │   └── p-value < 0.01 → drift significativo           │    │
-│  │  │   └── Wasserstein Distance (para features continuas)      │    │
-│  │  └── Output: Evidently HTML report → S3 + MLflow run         │    │
-│  │                                                              │    │
-│  │  Task 2: Compute Prediction Drift                            │    │
-│  │  ├── Distribución de scores de predicción T vs T-7           │    │
-│  │  ├── PSI de distribución de Top-K product_ids                │    │
-│  │  └── Alertas si > 20% de los items en Top-10 son nuevos     │    │
-│  │                                                              │    │
-│  │  Task 3: Compute Target Drift (delayed ground truth)         │    │
-│  │  ├── CTR real vs CTR esperado (por cohort semanal)           │    │
-│  │  ├── Conversion rate trend (rolling 7 days)                  │    │
-│  │  └── Alerta si gap > 2 std vs media histórica              │    │
-│  │                                                              │    │
-│  │  Task 4: Decision                                            │    │
-│  │  ├── IF max(PSI) > 0.25 → trigger immediate retrain DAG     │    │
-│  │  ├── IF 0.10 < max(PSI) < 0.25 → Slack warning #ml-alerts   │    │
-│  │  └── IF all PSI < 0.10 → log OK, continue normal schedule   │    │
-│  └─────────────────────────────────────────────────────────────┘    │
-│                                                                      │
-│  MÉTRICAS MONITOREADAS POR MODELO                                    │
-│  ─────────────────────────────────                                   │
-│                                                                      │
-│  Productos Recomendados:                                             │
-│  ├── user_ctr_by_category (PSI)                                      │
-│  ├── session_length (KS test)                                        │
-│  ├── avg_price_viewed (Wasserstein)                                   │
-│  ├── category_distribution (Chi-squared)                             │
-│  └── prediction_score_distribution (PSI)                             │
-│                                                                      │
-│  Motor de Búsqueda:                                                  │
-│  ├── query_length_distribution (KS test)                             │
-│  ├── query_category_distribution (Chi-squared)                       │
-│  ├── embedding_centroid_shift (cosine distance)                      │
-│  ├── retrieval_score_distribution (PSI)                               │
-│  └── zero_result_rate_trend (statistical process control)            │
-│                                                                      │
-└──────────────────────────────────────────────────────────────────────┘
-```
+
+#### Métricas Monitoreadas por Modelo
+
+**Productos Recomendados:**
+
+| Feature | Test |
+|---|---|
+| `user_ctr_by_category` | PSI |
+| `session_length` | KS test |
+| `avg_price_viewed` | Wasserstein |
+| `category_distribution` | Chi-squared |
+| `prediction_score_distribution` | PSI |
+
+**Motor de Búsqueda:**
+
+| Feature | Test |
+|---|---|
+| `query_length_distribution` | KS test |
+| `query_category_distribution` | Chi-squared |
+| `embedding_centroid_shift` | Cosine distance |
+| `retrieval_score_distribution` | PSI |
+| `zero_result_rate_trend` | Statistical process control |
 
 ### 11.2 Dashboards de Grafana
 
@@ -1863,14 +1917,14 @@ groups:
 
 | # | Referencia | Descripción | URL |
 |---|---|---|---|
-| 1 | Kreuzberger, D., Kühl, N., & Hirschl, S. (2023). *Machine Learning Operations (MLOps): Overview, Definition, and Architecture.* IEEE Access. | Paper fundacional que define los niveles de madurez MLOps 0-2 utilizados en este documento | https://arxiv.org/abs/2205.02302 |
-| 2 | Covington, P., Adams, J., & Sargin, E. (2016). *Deep Neural Networks for YouTube Recommendations.* RecSys. | Arquitectura Two-Tower original de Google que inspira nuestro Stage A de retrieval | https://research.google/pubs/pub45530/ |
-| 3 | Yi, X. et al. (2019). *Sampling-Bias-Corrected Neural Modeling for Large Corpus Item Recommendations.* RecSys. | In-batch sampled softmax y corrección de bias que usamos en el Two-Tower | https://research.google/pubs/pub48840/ |
-| 4 | Burges, C.J.C. (2010). *From RankNet to LambdaRank to LambdaMART: An Overview.* Microsoft Research. | Fundamento teórico de LambdaRank implementado vía LightGBM en ambos modelos | https://www.microsoft.com/en-us/research/publication/from-ranknet-to-lambdarank-to-lambdamart-an-overview/ |
-| 5 | Reimers, N. & Gurevych, I. (2019). *Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks.* EMNLP. | Base del modelo Sentence-BERT utilizado para embeddings de búsqueda | https://arxiv.org/abs/1908.10084 |
-| 6 | Barkan, O. & Koenigstein, N. (2016). *Item2Vec: Neural Item Embedding for Collaborative Filtering.* IEEE MLSP. | Método de embeddings Item2Vec aplicado a secuencias de sesión | https://arxiv.org/abs/1603.04259 |
-| 7 | Carbonell, J. & Goldstein, J. (1998). *The Use of MMR, Diversity-Based Reranking for Reordering Documents and Producing Summaries.* SIGIR. | Maximal Marginal Relevance para diversificación de resultados en re-ranking | https://dl.acm.org/doi/10.1145/290941.291025 |
-| 8 | Sculley, D. et al. (2015). *Hidden Technical Debt in Machine Learning Systems.* NeurIPS. | Anti-patrones de ML en producción que esta arquitectura evita | https://papers.nips.cc/paper/2015/hash/86df7dcfd896fcaf2674f757a2463eba-Abstract.html |
+| 1 | Kreuzberger, D., Kühl, N., & Hirschl, S. (2023). *Machine Learning Operations (MLOps): Overview, Definition, and Architecture.* IEEE Access. | Paper fundacional que define los niveles de madurez MLOps 0-2 utilizados en este documento | <https://arxiv.org/abs/2205.02302> |
+| 2 | Covington, P., Adams, J., & Sargin, E. (2016). *Deep Neural Networks for YouTube Recommendations.* RecSys. | Arquitectura Two-Tower original de Google que inspira nuestro Stage A de retrieval | <https://research.google/pubs/pub45530/> |
+| 3 | Yi, X. et al. (2019). *Sampling-Bias-Corrected Neural Modeling for Large Corpus Item Recommendations.* RecSys. | In-batch sampled softmax y corrección de bias que usamos en el Two-Tower | <https://research.google/pubs/pub48840/> |
+| 4 | Burges, C.J.C. (2010). *From RankNet to LambdaRank to LambdaMART: An Overview.* Microsoft Research. | Fundamento teórico de LambdaRank implementado vía LightGBM en ambos modelos | <https://www.microsoft.com/en-us/research/publication/from-ranknet-to-lambdarank-to-lambdamart-an-overview/> |
+| 5 | Reimers, N. & Gurevych, I. (2019). *Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks.* EMNLP. | Base del modelo Sentence-BERT utilizado para embeddings de búsqueda | <https://arxiv.org/abs/1908.10084> |
+| 6 | Barkan, O. & Koenigstein, N. (2016). *Item2Vec: Neural Item Embedding for Collaborative Filtering.* IEEE MLSP. | Método de embeddings Item2Vec aplicado a secuencias de sesión | <https://arxiv.org/abs/1603.04259> |
+| 7 | Carbonell, J. & Goldstein, J. (1998). *The Use of MMR, Diversity-Based Reranking for Reordering Documents and Producing Summaries.* SIGIR. | Maximal Marginal Relevance para diversificación de resultados en re-ranking | <https://dl.acm.org/doi/10.1145/290941.291025> |
+| 8 | Sculley, D. et al. (2015). *Hidden Technical Debt in Machine Learning Systems.* NeurIPS. | Anti-patrones de ML en producción que esta arquitectura evita | <https://papers.nips.cc/paper/2015/hash/86df7dcfd896fcaf2674f757a2463eba-Abstract.html> |
 
 ### 12.2 Libros de Referencia
 
@@ -1888,41 +1942,41 @@ groups:
 
 | # | Herramienta | URL |
 |---|---|---|
-| 1 | MLflow Documentation | https://mlflow.org/docs/latest/index.html |
-| 2 | Kubeflow Pipelines on AWS EKS | https://www.kubeflow.org/docs/distributions/aws/ |
-| 3 | Apache Airflow – Amazon MWAA | https://docs.aws.amazon.com/mwaa/ |
-| 4 | Feast Feature Store | https://docs.feast.dev/ |
-| 5 | Evidently AI (Data Drift) | https://docs.evidentlyai.com/ |
-| 6 | Amazon EKS Best Practices | https://aws.github.io/aws-eks-best-practices/ |
-| 7 | ArgoCD GitOps for K8s | https://argo-cd.readthedocs.io/ |
-| 8 | Amazon OpenSearch KNN Plugin | https://docs.aws.amazon.com/opensearch-service/latest/developerguide/knn.html |
-| 9 | Sentence-Transformers Library | https://www.sbert.net/ |
-| 10 | LightGBM (Learning-to-Rank) | https://lightgbm.readthedocs.io/en/stable/ |
-| 11 | Spark on Kubernetes (Spark Operator) | https://github.com/kubeflow/spark-operator |
-| 12 | Terraform AWS Provider | https://registry.terraform.io/providers/hashicorp/aws/latest/docs |
-| 13 | Karpenter (K8s Autoscaler) | https://karpenter.sh/docs/ |
-| 14 | Great Expectations (Data Quality) | https://docs.greatexpectations.io/ |
-| 15 | FAISS (Facebook AI Similarity Search) | https://github.com/facebookresearch/faiss |
-| 16 | DVC – Data Version Control | https://dvc.org/doc |
-| 17 | Amazon Kinesis Data Streams | https://docs.aws.amazon.com/streams/latest/dev/ |
-| 18 | Amazon Redshift Serverless | https://docs.aws.amazon.com/redshift/latest/mgmt/serverless-whatis.html |
-| 19 | Prometheus + Grafana Stack | https://prometheus.io/docs/ / https://grafana.com/docs/ |
-| 20 | Trivy (Container Security) | https://trivy.dev/latest/docs/ |
+| 1 | MLflow Documentation | <https://mlflow.org/docs/latest/index.html> |
+| 2 | Kubeflow Pipelines on AWS EKS | <https://www.kubeflow.org/docs/distributions/aws/> |
+| 3 | Apache Airflow – Amazon MWAA | <https://docs.aws.amazon.com/mwaa/> |
+| 4 | Feast Feature Store | <https://docs.feast.dev/> |
+| 5 | Evidently AI (Data Drift) | <https://docs.evidentlyai.com/> |
+| 6 | Amazon EKS Best Practices | <https://aws.github.io/aws-eks-best-practices/> |
+| 7 | ArgoCD GitOps for K8s | <https://argo-cd.readthedocs.io/> |
+| 8 | Amazon OpenSearch KNN Plugin | <https://docs.aws.amazon.com/opensearch-service/latest/developerguide/knn.html> |
+| 9 | Sentence-Transformers Library | <https://www.sbert.net/> |
+| 10 | LightGBM (Learning-to-Rank) | <https://lightgbm.readthedocs.io/en/stable/> |
+| 11 | Spark on Kubernetes (Spark Operator) | <https://github.com/kubeflow/spark-operator> |
+| 12 | Terraform AWS Provider | <https://registry.terraform.io/providers/hashicorp/aws/latest/docs> |
+| 13 | Karpenter (K8s Autoscaler) | <https://karpenter.sh/docs/> |
+| 14 | Great Expectations (Data Quality) | <https://docs.greatexpectations.io/> |
+| 15 | FAISS (Facebook AI Similarity Search) | <https://github.com/facebookresearch/faiss> |
+| 16 | DVC – Data Version Control | <https://dvc.org/doc> |
+| 17 | Amazon Kinesis Data Streams | <https://docs.aws.amazon.com/streams/latest/dev/> |
+| 18 | Amazon Redshift Serverless | <https://docs.aws.amazon.com/redshift/latest/mgmt/serverless-whatis.html> |
+| 19 | Prometheus + Grafana Stack | <https://prometheus.io/docs/> / <https://grafana.com/docs/> |
+| 20 | Trivy (Container Security) | <https://trivy.dev/latest/docs/> |
 
 ### 12.4 Blogs y Recursos Técnicos de Industria
 
 | # | Referencia | URL |
 |---|---|---|
-| 1 | Model Cards for Model Reporting (Google) | https://modelcards.withgoogle.com/ |
-| 2 | Kaggle – Model Cards Template | https://www.kaggle.com/code/var0101/model-cards |
-| 3 | ML Design Docs – Eugene Yan | https://eugeneyan.com/writing/ml-design-docs/ |
-| 4 | Software Engineering RFC and Design – Pragmatic Engineer | https://newsletter.pragmaticengineer.com/p/software-engineering-rfc-and-design |
-| 5 | Champion/Challenger Pattern for ML Deployment | https://christophergs.com/machine%20learning/2019/03/30/deploying-and-versioning-data-science-models-at-scale/ |
-| 6 | Spotify – ML Infrastructure Case Study | https://engineering.atspotify.com/2019/12/13/the-winding-road-to-better-machine-learning-infrastructure-through-tensorflow-extended-and-kubeflow/ |
-| 7 | Netflix – System Architectures for Personalization and Recommendation | https://netflixtechblog.com/system-architectures-for-personalization-and-recommendation-e081aa94b5d8 |
-| 8 | Uber – Michelangelo ML Platform | https://www.uber.com/blog/michelangelo-machine-learning-platform/ |
-| 9 | Airbnb – Machine Learning Infrastructure | https://medium.com/airbnb-engineering/using-machine-learning-to-predict-value-of-homes-on-airbnb-9272d3d4739d |
-| 10 | AWS Well-Architected ML Lens | https://docs.aws.amazon.com/wellarchitected/latest/machine-learning-lens/machine-learning-lens.html |
+| 1 | Model Cards for Model Reporting (Google) | <https://modelcards.withgoogle.com/> |
+| 2 | Kaggle – Model Cards Template | <https://www.kaggle.com/code/var0101/model-cards> |
+| 3 | ML Design Docs – Eugene Yan | <https://eugeneyan.com/writing/ml-design-docs/> |
+| 4 | Software Engineering RFC and Design – Pragmatic Engineer | <https://newsletter.pragmaticengineer.com/p/software-engineering-rfc-and-design> |
+| 5 | Champion/Challenger Pattern for ML Deployment | <https://christophergs.com/machine%20learning/2019/03/30/deploying-and-versioning-data-science-models-at-scale/> |
+| 6 | Spotify – ML Infrastructure Case Study | <https://engineering.atspotify.com/2019/12/13/the-winding-road-to-better-machine-learning-infrastructure-through-tensorflow-extended-and-kubeflow/> |
+| 7 | Netflix – System Architectures for Personalization and Recommendation | <https://netflixtechblog.com/system-architectures-for-personalization-and-recommendation-e081aa94b5d8> |
+| 8 | Uber – Michelangelo ML Platform | <https://www.uber.com/blog/michelangelo-machine-learning-platform/> |
+| 9 | Airbnb – Machine Learning Infrastructure | <https://medium.com/airbnb-engineering/using-machine-learning-to-predict-value-of-homes-on-airbnb-9272d3d4739d> |
+| 10 | AWS Well-Architected ML Lens | <https://docs.aws.amazon.com/wellarchitected/latest/machine-learning-lens/machine-learning-lens.html> |
 
 ---
 
