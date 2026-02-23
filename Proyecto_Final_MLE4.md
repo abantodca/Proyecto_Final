@@ -1,8 +1,8 @@
 # Proyecto Final – Especialización Machine Learning Engineering · Curso IV
 
-**Consultor MLOps:** Carlos Abanto  
+**Autor:** Carlos Abanto  
 **Fecha:** Febrero 2026  
-**Cliente:** DSRPMart – Startup Marketplace  
+**Cliente:** DSRPMart – Marketplace digital en Latinoamérica  
 **Casos de Uso Seleccionados:**  
 
 1. Productos Recomendados (ranking por interacción, varias veces al día)  
@@ -64,11 +64,11 @@ La propuesta de incorporar ML/IA no es un ejercicio tecnológico sino una **nece
 | Sin capacidad de medir impacto de cambios | **A/B Testing automatizado** con métricas de negocio (CTR, conversion, revenue) | Decisiones data-driven, no por intuición |
 | Modelos manuales que se degradan con el tiempo | **MLOps automatizado** con detección de drift y reentrenamiento continuo | Modelos siempre actualizados → revenue sostenido |
 
-> **ROI Estimado:** Basado en benchmarks de la industria (McKinsey, 2023: *"personalization increases revenue 10-15%"*), proyectamos que la inversión en ML generará un incremento de **10-15% en GMV (Gross Merchandise Value)** en los primeros 12 meses post-implementación, con un payback period de 6-8 meses considerando los costos de infraestructura AWS y equipo.
+> **Retorno de inversión estimado:** Según estudios de McKinsey (2023), la personalización aumenta los ingresos entre 10-15%. Proyectamos que esta inversión en ML generará un incremento de **10-15% en ventas totales (GMV)** en los primeros 12 meses, con recuperación de la inversión en 6-8 meses considerando los costos de infraestructura AWS y el equipo de 11 personas.
 
 ### 1.3 Propuesta de Solución
 
-Como consultores MLOps, proponemos implementar una plataforma de **Machine Learning en producción** sobre **AWS con Kubernetes (EKS)**, con nivel de madurez **MLOps Nivel 2** (Continuous Training + CI/CD), que resuelva los dos casos de uso con mayor impacto en ventas:
+Proponemos implementar una plataforma de **Machine Learning en producción** sobre **Amazon Web Services (AWS)**, que permita entrenar, desplegar y actualizar modelos de inteligencia artificial de forma automatizada. Esta plataforma resolverá los dos problemas con mayor impacto en ventas:
 
 | Caso de Uso | Qué resuelve | Frecuencia | Impacto en ventas |
 |---|---|---|---|
@@ -106,7 +106,9 @@ La siguiente tabla mapea cada requerimiento del proyecto con la sección del doc
 
 ## 3. Nivel de Madurez MLOps
 
-Esta propuesta implementa **MLOps Nivel 2 (ML Pipeline Automation + CI/CD)** según la clasificación de Google Cloud / [Kreuzberger et al., 2023](https://arxiv.org/abs/2205.02302). A continuación se visualiza la progresión y se argumenta por qué este nivel es el apropiado para DSRPMart.
+MLOps (Machine Learning Operations) define qué tan automatizado está el proceso de entrenar, desplegar y mantener modelos de ML en producción. Existen 3 niveles: en el **Nivel 0** todo es manual; en el **Nivel 1** el entrenamiento está automatizado pero el despliegue es manual; en el **Nivel 2** todo el ciclo está automatizado, incluyendo despliegue y reentrenamiento ante cambios en los datos.
+
+Esta propuesta implementa **MLOps Nivel 2 (Automatización completa + CI/CD)** según la clasificación académica de [Kreuzberger et al., 2023](https://arxiv.org/abs/2205.02302). A continuación se muestra la progresión entre niveles y por qué el Nivel 2 es el adecuado para DSRPMart.
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {'fontSize': '14px', 'fontFamily': 'Segoe UI, Arial', 'primaryColor': '#f0f4f8', 'lineColor': '#4a5568'}}}%%
@@ -157,7 +159,7 @@ flowchart LR
 | **Reproducibilidad** | Parcial (solo training) | Completa (código + datos + config + infra) | Auditoría y compliance para inversores/reguladores |
 | **Costo operativo** | Alto (intervención manual frecuente) | Bajo (automation > on-call) | Equipo de 11 personas puede operar 2+ modelos |
 
-**¿Por qué NO Nivel 3 (Full Automation)?** No se justifica aún porque DSRPMart es una startup con 2 modelos en producción y 11 personas. El Nivel 3 con self-healing pipelines, automated model selection y zero-touch deployment agrega complejidad sin ROI proporcional a esta escala.
+**¿Por qué NO Nivel 3 (Automatización Total)?** No es necesario aún porque DSRPMart opera solo 2 modelos con un equipo de 11 personas. El Nivel 3 agrega complejidad (pipelines que se auto-reparan, selección automática de modelos) sin beneficio proporcional a esta escala. Se puede evolucionar a Nivel 3 en el futuro cuando haya más modelos en producción.
 
 ---
 
@@ -165,9 +167,9 @@ flowchart LR
 
 ### 4.1 Descripción del Problema
 
-Cuando un usuario abre la app de DSRPMart, actualmente ve una lista genérica de "productos populares" idéntica para todos los usuarios. Esto ignora que cada persona tiene intereses distintos basados en su historial de navegación, compras y búsquedas. El resultado: **baja tasa de click (<5% CTR)** en la sección de inicio y **pérdida de oportunidades de venta** por no mostrar productos relevantes.
+Cuando un usuario abre la app de DSRPMart, actualmente ve una lista genérica de "productos populares" que es idéntica para todos. Esto ignora que cada persona tiene gustos e intereses distintos según su historial de navegación, compras y búsquedas. El resultado: los usuarios hacen pocos clicks (**menos del 5%**) en la sección de inicio y se pierden muchas oportunidades de venta.
 
-La solución propuesta genera un **ranking personalizado de productos TOP-20** para cada usuario activo, actualizado 4 veces al día basado en la interacción del usuario con la aplicación (clicks, vistas, compras, tiempo en página, búsquedas). Esto transforma la experiencia de "una tienda igual para todos" a "una tienda personalizada para cada usuario".
+**Solución propuesta:** Generar un **ranking personalizado de 20 productos** para cada usuario, actualizado 4 veces al día. El sistema aprende del comportamiento de cada persona (qué mira, qué compra, qué busca) para mostrarle lo que realmente le interesa. En lugar de "una tienda igual para todos", cada usuario verá "su tienda personalizada".
 
 ### 4.2 Flujo End-to-End
 
@@ -309,22 +311,26 @@ flowchart TD
 
 ### 4.3 Algoritmos y Justificación
 
-| Componente | Algoritmo | Por qué este algoritmo |
-|---|---|---|
-| **Retrieval** (Stage A) | **Two-Tower Neural Network** (TensorFlow) | Desacopla user/item towers permitiendo precomputar item embeddings offline. Escala a millones de productos con búsqueda ANN en < 10ms |
-| **Ranking** (Stage B) | **LightGBM LambdaRank** | Optimiza NDCG directamente (learning-to-rank), rápido de entrenar, excelente con features tabulares + embeddings. Interpretable con SHAP |
-| **Re-Ranking** (Stage C) | **MMR (Maximal Marginal Relevance)** | Evita "filter bubble" diversificando categorías en el top-20. Sin reentrenamiento, solo ajuste de λ |
-| **Embeddings** | **Item2Vec** (Word2Vec sobre secuencias de sesión) | Captura co-ocurrencia de productos en sesiones reales (análogo a word embeddings) |
-| **Cold Start** (usuarios nuevos) | **Content-Based + Popularidad** | Usuarios sin historial reciben top populares de su segmento demográfico |
+El sistema de recomendación funciona en 3 etapas, como un embudo: primero selecciona candidatos del catálogo completo, luego los ordena por relevancia, y finalmente diversifica para no mostrar solo productos del mismo tipo.
 
-**Optimizaciones aplicadas:**
+| Etapa | Algoritmo | Qué hace (en palabras simples) | Por qué este algoritmo |
+|---|---|---|---|
+| **1. Selección de candidatos** | **Two-Tower Neural Network** (TensorFlow) | Dos redes neuronales: una "entiende" al usuario y otra "entiende" los productos. Encuentra los 100 productos más afines a cada usuario | Permite buscar entre millones de productos en milisegundos usando vectores matemáticos pre-calculados |
+| **2. Ranking** | **LightGBM LambdaRank** | Toma los 100 candidatos y los ordena de mejor a peor según múltiples señales (historial, precio, popularidad, categoría) | Optimiza directamente la calidad del orden (NDCG), es rápido y permite interpretar qué factores influyeron |
+| **3. Diversificación** | **MMR (Maximal Marginal Relevance)** | Evita que el top-20 sea todo del mismo tipo (ej: solo zapatos). Mezcla relevancia con variedad | No requiere reentrenamiento, solo un parámetro ajustable |
+| *Auxiliar* | **Item2Vec** | Aprende qué productos se ven juntos en una sesión (similar a cómo se aprenden relaciones entre palabras) | Genera representaciones numéricas que capturan similitud real entre productos |
+| *Cold Start* | **Popularidad por segmento** | Para usuarios nuevos sin historial: muestra los más populares de su región/categoría | Solución rápida sin necesidad de datos previos del usuario |
 
-- **Mixed Precision Training** (FP16) en Two-Tower → 2x más rápido en GPU
-- **Feature hashing** para categorías de alta cardinalidad (> 10K SKUs)
-- **Negative sampling** adaptativo (hard negatives de ANN) → mejor discriminación
-- **Incremental training** diario (warm-start desde checkpoint anterior)
+**Optimizaciones aplicadas** (reducen costos y mejoran velocidad):
+
+- **Mixed Precision Training** — Entrena el modelo con menor precisión numérica, lo que lo hace 2 veces más rápido en GPU sin perder calidad
+- **Feature hashing** — Comprime categorías de productos para manejar eficientemente +10.000 tipos
+- **Negative sampling adaptativo** — El modelo aprende no solo de lo que el usuario compró, sino también de lo que NOT le interesó, mejorando la precisión
+- **Incremental training** — En vez de reentrenar desde cero cada día, continua desde el modelo anterior (más rápido y económico)
 
 ### 4.4 Model Card – Productos Recomendados
+
+> Una **Model Card** es la ficha técnica del modelo de ML — documenta qué es, cómo fue entrenado, qué tan bien funciona, y cuándo se debe re-evaluar. Es similar a la ficha técnica de un medicamento: permite auditar y tomar decisiones informadas.
 
 > **MODEL CARD — DSRPMart Product Recommender v2.0**
 
@@ -490,13 +496,13 @@ flowchart LR
 
 ### 5.1 Descripción del Problema
 
-En una aplicación de ventas con catálogo masivo (+500K productos), la **búsqueda es el principal canal de conversión**: los usuarios que buscan tienen una intención de compra clara. El problema actual es que el motor de búsqueda de DSRPMart utiliza únicamente matching lexical (palabras exactas), lo que resulta en:
+En una aplicación de ventas con más de 500.000 productos, la **búsqueda es el canal principal de conversión**: cuando un usuario busca algo, tiene intención clara de comprar. El problema es que el buscador actual de DSRPMart solo encuentra coincidencias de palabras exactas, lo que genera tres problemas concretos:
 
-- **~8% de búsquedas sin resultado** (el usuario escribe "celular barato" pero el producto se llama "smartphone económico")
-- **Baja relevancia**: resultados ordenados por fecha de publicación, no por relevancia para el usuario
-- **Sin personalización**: todos los usuarios ven los mismos resultados para la misma query
+- **8% de búsquedas no devuelven ningún resultado** — por ejemplo, si el usuario escribe "celular barato" pero el producto se llama "smartphone económico", el buscador no los conecta
+- **Resultados poco relevantes** — se ordenan por fecha de publicación, no por lo que le interesa al usuario
+- **Sin personalización** — todos los usuarios ven los mismos resultados para la misma búsqueda
 
-La solución propuesta conecta la **query/consulta del usuario** con los **TOP-K productos más relevantes** del catálogo usando **comprensión semántica** (el modelo entiende que "celular" ≈ "smartphone") y **ranking personalizado** por usuario.
+**Solución propuesta:** Un buscador inteligente que **entiende el significado** de lo que el usuario escribe (no solo las palabras exactas) y ordena los resultados según la relevancia para cada persona. Así, "celular" encontrará "smartphone" y los resultados se adaptarán a las preferencias de cada usuario.
 
 ### 5.2 Flujo End-to-End
 
@@ -638,23 +644,27 @@ flowchart TD
 
 ### 5.3 Algoritmos y Justificación
 
-| Componente | Algoritmo | Justificación |
-|---|---|---|
-| **Embeddings de búsqueda** | **Sentence-BERT** (all-MiniLM-L6-v2 fine-tuned) | Balance velocidad/calidad, 384 dims suficientes para e-commerce. Fine-tune en dominio de DSRPMart |
-| **Retrieval lexical** | **BM25** (OpenSearch built-in) | Captura matches exactos que los embeddings pueden perder ("iPhone 15 Pro Max 256GB") |
-| **Retrieval semántico** | **KNN HNSW** (Amazon OpenSearch) | Búsqueda ANN eficiente, managed service, < 20ms por query |
-| **Ranking** | **LightGBM LambdaRank** | Combina signals lexicales + semánticas + negocio en un solo score optimizado para NDCG |
-| **Spell correction** | **SymSpell** | O(1) lookup, pre-computable, ideal para latencia baja |
-| **Query expansion** | **Sinónimos curados + Word2Vec** | Expande "celular" → "smartphone", "teléfono móvil" |
+El buscador funciona en 3 etapas: primero busca por palabras y por significado en paralelo, luego combina y ordena los resultados, y finalmente los entrega en menos de 100 milisegundos.
 
-**Optimizaciones:**
+| Etapa | Algoritmo | Qué hace (en palabras simples) | Por qué este algoritmo |
+|---|---|---|---|
+| **Embeddings** | **Sentence-BERT** (modelo pre-entrenado y ajustado a DSRPMart) | Convierte títulos de productos y búsquedas del usuario a vectores numéricos que capturan el significado | Equilibrio óptimo entre velocidad y calidad. Entiende que "celular" ≈ "smartphone" |
+| **Búsqueda por palabras** | **BM25** (integrado en OpenSearch) | Busca coincidencias de texto tradicional, like Google | Captura matches exactos que la IA podría perder (ej: "iPhone 15 Pro Max 256GB") |
+| **Búsqueda por significado** | **KNN HNSW** (Amazon OpenSearch) | Busca los productos cuyo significado es más cercano a lo que el usuario escribió | Búsqueda rápida entre millones de vectores en menos de 20ms |
+| **Ranking** | **LightGBM LambdaRank** | Combina señales de palabras + significado + popularidad + historial del usuario en un solo puntaje | Optimiza directamente la calidad del orden de resultados |
+| **Corrección** | **SymSpell** | Corrige errores de escritura del usuario ("iphne" → "iphone") | Ultra-rápido sin afectar la latencia |
+| **Sinónimos** | **Diccionario curado + Word2Vec** | Expande "celular" → "smartphone", "teléfono móvil" | Reduce drásticamente las búsquedas sin resultado |
 
-- **Hybrid Search** (BM25 + KNN en paralelo) → mejor recall que cualquiera solo
-- **Embedding quantization** (int8) → reduce tamaño del índice 4x, latencia 2x menor
-- **Query result caching** en ElastiCache Redis (TTL 30 min) para queries frecuentes
-- **Warm-up** de las top-1000 queries más populares al deploy del índice
+**Optimizaciones** (mejoran velocidad y relevancia):
+
+- **Búsqueda híbrida** — Combina búsqueda por palabras y por significado en paralelo, encontrando más resultados relevantes que usando solo una de las dos
+- **Compresión de embeddings** — Reduce el tamaño del índice de búsqueda 4 veces, haciendo las consultas 2 veces más rápidas
+- **Cache de resultados** — Las búsquedas frecuentes se guardan en memoria (Redis) por 30 minutos para responder instantáneamente
+- **Pre-calentamiento** — Las 1.000 búsquedas más populares se pre-calculan al desplegar un nuevo índice
 
 ### 5.4 Model Card – Motor de Búsqueda
+
+> Ficha técnica del modelo de búsqueda inteligente, siguiendo el mismo formato de documentación del recomendador.
 
 > **MODEL CARD — DSRPMart Search Engine v1.0**
 
@@ -787,7 +797,7 @@ flowchart LR
 
 ## 6. Tipo de Solución
 
-> **Decisión clave de negocio:** La elección entre batch, real-time y streaming no es solo técnica — impacta directamente la experiencia de compra del usuario y, por tanto, la tasa de conversión. Para DSRPMart, la pregunta no es "¿qué es más moderno?" sino "¿qué patrón maximiza ventas al menor costo operativo?". A continuación, cada caso de uso se analiza desde la perspectiva del comportamiento del comprador y su expectativa de latencia.
+> **¿Por qué importa esta decisión?** Elegir entre procesar datos por lotes (batch), en tiempo real o en streaming afecta directamente la experiencia de compra y los costos. La pregunta clave no es "qué es más moderno" sino "qué maximiza las ventas al menor costo". A continuación analizamos cada caso desde lo que el usuario espera al usar la app.
 
 ### 6.1 Productos Recomendados → **Batch (Mini-Batch Frecuente)**
 
@@ -799,16 +809,16 @@ flowchart LR
 | Costo | Spot instances GPU para training, Spot CPU para inference → ~70% ahorro vs. on-demand | Batch optimiza costos |
 | Complejidad del modelo | Two-Tower + LambdaRank son pesados para real-time per-request | Batch permite modelos más complejos |
 
-**¿Por qué NO real-time?**
+**¿Por qué NO en tiempo real?**
 
-- Las recomendaciones no necesitan actualizarse en milisegundos; cada 4-6h es suficiente
-- La personalización real-time requeriría servir el modelo Two-Tower + LambdaRank por request, con costos de GPU significativos
-- El patrón batch → Redis da latencia < 5ms con costo muy inferior
+- Las recomendaciones no necesitan actualizarse al instante; cada 4-6 horas es suficiente para una buena experiencia
+- Calcular recomendaciones en tiempo real por cada visita requiere servidores GPU costosos
+- El enfoque batch + cache da tiempos de respuesta de 5 milisegundos a una fracción del costo
 
 **¿Por qué NO streaming?**
 
-- No hay un evento individual que invalide todo el ranking (como un "stock agotado" que sí justificaría streaming)
-- La complejidad de Spark Structured Streaming + Feature Store real-time no justifica el incremento marginal de frescura
+- No hay eventos individuales que invaliden todo el ranking (si un producto se agota, se filtra en el momento de servirlo)
+- La complejidad adicional de streaming no justifica la pequeña mejora en frescura de las recomendaciones
 
 ### 6.2 Motor de Búsqueda → **Hybrid: Batch (Indexación) + Real-Time (Serving)**
 
@@ -819,15 +829,15 @@ flowchart LR
 | SLA de latencia | UX de búsqueda requiere sub-segundo | Serving en EKS + Redis cache |
 | Stock freshness | Productos sin stock no deben aparecer | CDC + filtro en query-time |
 
-El Motor de Búsqueda es inherentemente **híbrido**: la indexación es batch pero el serving es real-time. La capa de ranking en query-time es un modelo ligero (LightGBM predict < 5ms para 150 candidatos) que se puede ejecutar por request sin problema.
+El Motor de Búsqueda es naturalmente **híbrido**: la preparación de índices se ejecuta por lotes (batch) pero las respuestas al usuario son en tiempo real. El modelo de ranking es lo suficientemente ligero como para evaluar 150 productos en menos de 5 milisegundos por cada búsqueda.
 
-**Impacto en ventas:** Una búsqueda que responde en < 100ms y muestra resultados relevantes reduce la tasa de abandono y aumenta el *add-to-cart rate*. El 8% de búsquedas con cero resultados representa carritos perdidos que esta arquitectura híbrida busca eliminar.
+**Impacto en ventas:** Una búsqueda que responde en menos de 100 milisegundos y muestra resultados relevantes reduce el abandono y aumenta las compras. El 8% de búsquedas sin resultado hoy representa ventas perdidas que esta arquitectura busca recuperar.
 
 ---
 
 ## 7. Stack Tecnológico AWS Cloud-Native
 
-> **Principio de diseño:** Cada herramienta del stack fue seleccionada por su capacidad de **impactar las métricas de ventas** de DSRPMart (conversión, latencia de búsqueda, frescura de recomendaciones), no solo por méritos técnicos. AWS fue elegido como proveedor único para mantener la coherencia operacional y aprovechar el ecosistema de datos más maduro del mercado, con el mayor pool de talento certificado en Latinoamérica.
+> **Criterio de selección:** Cada herramienta fue elegida por su capacidad de **mejorar las ventas** de DSRPMart (más conversión, búsqueda más rápida, recomendaciones más frescas), no solo por méritos técnicos. Usamos **AWS como proveedor único** para simplificar la operación y aprovechar el ecosistema de datos más maduro del mercado, con la mayor base de profesionales certificados en Latinoamérica.
 
 ### 7.a Control de Versiones de Código
 
@@ -904,7 +914,7 @@ AWS Organization
 
 | Herramienta | Función | Justificación |
 |---|---|---|
-| **MLflow Tracking Server** (desplegado en EKS) | Log de experimentos: params, métricas, artifacts | Open-source, agnóstico de framework, UI web |
+| **MLflow Tracking Server** (desplegado en EKS) | Registro de experimentos: parámetros, métricas, archivos generados | Código abierto, funciona con cualquier framework, interfaz web |
 | **MLflow Model Registry** | Versionado de modelos, transiciones Staging→Production | Centraliza lifecycle del modelo, API programable |
 | **Backend Store** | Amazon RDS PostgreSQL (metadata de runs) | Managed, backups automáticos |
 | **Artifact Store** | S3 `s3://dsrpmart-mlflow-artifacts/` | Almacena modelos serializados, FAISS indices, reports |
@@ -1062,16 +1072,16 @@ flowchart TD
 
 ### 7.g Métricas de Performance, Aplicación y Herramientas de Visualización
 
-| Tipo de Métrica | Métricas | Herramienta Recolección | Herramienta Visualización |
+| Tipo de Métrica | Métricas | Herramienta que Recolecta | Herramienta de Visualización |
 |---|---|---|---|
-| **Model Performance (offline)** | NDCG@10, MRR, Hit Rate, Recall@100, RMSE | MLflow Tracking | MLflow UI + Grafana |
-| **Model Performance (online)** | CTR, Conversion Rate, Revenue per Session | Kinesis → Redshift | Amazon QuickSight + Grafana |
-| **Data Drift** | PSI por feature, KS test, target drift, embedding drift | Evidently AI (batch reports) | Evidently Dashboard + S3 HTML reports |
-| **Infraestructura K8s** | CPU/Memory pods, pod restarts, node scaling | Prometheus (kube-state-metrics) | Grafana dashboards |
-| **Aplicación / API** | Latencia p50/p95/p99, error rate, throughput (RPS) | Prometheus (FastAPI metrics) | Grafana |
-| **Pipeline Health** | DAG success rate, task durations, SLA misses | Airflow metrics + CloudWatch | Grafana + Airflow UI |
-| **Negocio** | GMV, Revenue Lift, Conversion, Retention | Redshift aggregations | Amazon QuickSight |
-| **Costos** | Spend por servicio, costo por prediction, cost per experiment | AWS Cost Explorer + custom tags | QuickSight + Grafana |
+| **Rendimiento del modelo (offline)** | NDCG@10, MRR, Hit Rate, Recall@100 | MLflow Tracking | MLflow UI + Grafana |
+| **Rendimiento del modelo (online)** | CTR, Tasa de Conversión, Ingreso por Sesión | Kinesis → Redshift | Amazon QuickSight + Grafana |
+| **Cambio en datos (Data Drift)** | PSI por variable, KS test, cambio en distribución de predicciones | Evidently AI (reportes batch) | Evidently Dashboard + reportes HTML en S3 |
+| **Infraestructura K8s** | CPU/Memoria por pod, reinicios, escalamiento de nodos | Prometheus (kube-state-metrics) | Grafana dashboards |
+| **Aplicación / API** | Latencia p50/p95/p99, tasa de error, consultas por segundo | Prometheus (métricas FastAPI) | Grafana |
+| **Salud de Pipelines** | Tasa de éxito de DAGs, duración de tareas, incumplimiento de SLA | Métricas Airflow + CloudWatch | Grafana + Airflow UI |
+| **Negocio** | Ventas totales (GMV), Incremento de ingresos, Conversión, Retención | Agregaciones en Redshift | Amazon QuickSight |
+| **Costos** | Gasto por servicio, costo por predicción, costo por experimento | AWS Cost Explorer + tags personalizados | QuickSight + Grafana |
 
 **Stack de Observabilidad:**
 
@@ -1127,7 +1137,7 @@ flowchart LR
 
 ### 7.i Análisis Comparativo del Stack – ¿Por Qué Estas Herramientas y No Otras?
 
-> **Esta sección argumenta cada decisión tecnológica del stack comparando alternativas reales del mercado**, aplicando criterios objetivos de evaluación. Escala: ⭐ (1) a ⭐⭐⭐⭐⭐ (5).
+> Esta sección justifica cada elección tecnológica comparando alternativas reales del mercado. Para cada decisión se evalúan criterios con peso y se asigna una puntuación de 1 a 5 estrellas. Esto permite explicar con transparencia **por qué elegimos cada herramienta y por qué descartamos las demás**.
 
 #### 7.i.1 Proveedor de Nube: ¿Por qué AWS y no GCP o Azure?
 
@@ -1141,7 +1151,7 @@ flowchart LR
 | **Multi-region/DR** (10%) | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | AWS tiene más regiones globales, importante para expansión de DSRPMart a Latam |
 | **Score ponderado** | **4.55** | **4.20** | **3.80** | **→ AWS elegido** |
 
-**Decisión:** AWS gana por ecosistema de datos maduro, talento disponible en Latam y mayor presencia regional. GCP sería segunda opción por su fortaleza en K8s y pricing.
+**Decisión:** AWS gana por su ecosistema de datos maduro, la cantidad de profesionales certificados disponibles en Latam y su mayor presencia de data centers en la región. GCP sería la segunda opción por su fortaleza en Kubernetes y precios competitivos.
 
 #### 7.i.2 Orquestación: ¿Por qué Airflow (MWAA) + Kubeflow y no Prefect, Dagster o solo SageMaker Pipelines?
 
@@ -1151,11 +1161,11 @@ flowchart LR
 | **AWS managed service** (20%) | ⭐⭐⭐⭐⭐ (MWAA) | ⭐⭐ (self-hosted) | ⭐⭐ (self-hosted) | ⭐⭐⭐⭐⭐ |
 | **ML-specific features** (20%) | ⭐⭐⭐⭐⭐ (KFP) | ⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
 | **GPU scheduling en K8s** (15%) | ⭐⭐⭐⭐⭐ (KFP nativo) | ⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ (propio infra) |
-| **Vendor lock-in** (15%) | ⭐⭐⭐⭐ (open-source) | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐ (SageMaker lock-in) |
+| **Vendor lock-in** (dependencia del proveedor) (15%) | ⭐⭐⭐⭐ (open-source) | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐ (SageMaker lock-in) |
 | **DAGs como código Python** (10%) | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ |
 | **Score ponderado** | **4.60** | **3.15** | **3.35** | **3.50** |
 
-**Decisión:** La combinación **Airflow como meta-orquestador + Kubeflow Pipelines para ML** es únia en que: (1) MWAA elimina el ops de Airflow, (2) KFP da containerización nativa de cada step + GPU scheduling + experiment lineage, (3) ambos son open-source → sin vendor lock-in. SageMaker Pipelines se descartó por lock-in total al ecosistema propietario de AWS.
+**Decisión:** La combinación **Airflow como orquestador general + Kubeflow para las tareas específicas de ML** es única en que: (1) MWAA es un servicio administrado por AWS, eliminando el trabajo de mantener Airflow, (2) Kubeflow permite ejecutar cada paso del entrenamiento en contenedores independientes con acceso a GPU, (3) ambos son de código abierto, evitando depender de un proveedor único. SageMaker Pipelines se descartó porque genera dependencia total del ecosistema propietario de AWS.
 
 #### 7.i.3 Model Management: ¿Por qué MLflow y no Weights & Biases, Neptune AI o SageMaker Model Registry?
 
@@ -1163,13 +1173,13 @@ flowchart LR
 |---|:---:|:---:|:---:|:---:|
 | **Costo** (25%) | ⭐⭐⭐⭐⭐ (gratis, OSS) | ⭐⭐ ($$$) | ⭐⭐⭐ ($$) | ⭐⭐⭐⭐ (incluido) |
 | **Model Registry integrado** (20%) | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ |
-| **Framework agnóstico** (20%) | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ (bias a SM) |
+| **Compatible con cualquier framework** (20%) | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ (sesgo a SageMaker) |
 | **API programable** (15%) | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ |
-| **Data residency control** (10%) | ⭐⭐⭐⭐⭐ (self-hosted) | ⭐⭐ (SaaS US) | ⭐⭐ (SaaS) | ⭐⭐⭐⭐ |
+| **Control de ubicación de datos** (10%) | ⭐⭐⭐⭐⭐ (auto-hospedado) | ⭐⭐ (SaaS en EEUU) | ⭐⭐ (SaaS) | ⭐⭐⭐⭐ |
 | **Comunidad y plugins** (10%) | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ |
 | **Score ponderado** | **4.65** | **3.50** | **3.30** | **3.50** |
 
-**Decisión:** MLflow self-hosted en EKS es la opción superior para una startup porque: (1) **costo $0** en licencias, solo infra (RDS + S3), (2) **control total** de datos y artifacts dentro de la VPC de AWS, (3) **API completa** para automatizar CI/CD pipelines, (4) **agnóstico** → funciona con TensorFlow, LightGBM, Sentence-Transformers sin adaptadores. W&B es excelente pero su costo SaaS (~$50/user/month) no se justifica en esta fase.
+**Decisión:** MLflow auto-hospedado en EKS es la mejor opción para una startup porque: (1) **sin costo de licencia**, solo se paga la infraestructura (base de datos + almacenamiento), (2) **control total** de los datos dentro de la red privada de AWS, (3) **API completa** para automatizar todo el proceso de CI/CD, (4) **funciona con cualquier framework** — TensorFlow, LightGBM, Sentence-Transformers, etc. W&B es excelente pero su costo (~$50/usuario/mes) no se justifica en esta fase.
 
 #### 7.i.4 Feature Store: ¿Por qué Feast y no Tecton o SageMaker Feature Store?
 
@@ -1179,10 +1189,10 @@ flowchart LR
 | **Point-in-time joins** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
 | **Online store: Redis** | ⭐⭐⭐⭐⭐ (nativo) | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ (DynamoDB) |
 | **Offline store: S3/Parquet** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
-| **Vendor lock-in** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐ |
+| **Dependencia del proveedor** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐ |
 | **Complejidad operacional** | ⭐⭐⭐ (self-managed) | ⭐⭐⭐⭐⭐ (SaaS) | ⭐⭐⭐⭐ |
 
-**Decisión:** Feast es Open-Source, se despliega en el mismo EKS, usa ElastiCache Redis que ya tenemos para serving, y S3 para offline. No agrega costo adicional significativo. Tecton es superior en features pero su precio ($100K+/año) no escala para una startup.
+**Decisión:** Feast es de código abierto, se despliega en el mismo clúster de Kubernetes, usa el Redis que ya tenemos para servir recomendaciones, y S3 para almacenamiento histórico. No agrega costo significativo. Tecton es técnicamente superior pero su precio (más de $100.000/año) no tiene sentido para una startup.
 
 #### 7.i.5 CI/CD: ¿Por qué GitHub Actions + ArgoCD y no Jenkins, GitLab CI o AWS CodePipeline?
 
@@ -1195,7 +1205,7 @@ flowchart LR
 | **Ecosistema marketplace** | ⭐⭐⭐⭐⭐ (Actions Market) | ⭐⭐⭐⭐ (plugins) | ⭐⭐⭐ | ⭐⭐ |
 | **Auto-rollback K8s** | ⭐⭐⭐⭐⭐ (ArgoCD native) | ⭐⭐ | ⭐⭐⭐ | ⭐⭐ |
 
-**Decisión:** GitHub Actions maneja CI (tests, build, push) y ArgoCD maneja CD (GitOps deployment a EKS). La separación CI ≠ CD sigue las mejores prácticas de GitOps. ArgoCD detecta drift en K8s y auto-heals, algo que CodePipeline o Jenkins no pueden hacer nativamente. Jenkins se descartó por alto costo operacional de mantener un Jenkins server.
+**Decisión:** GitHub Actions se encarga de las pruebas y construcción de imágenes (CI) y ArgoCD se encarga del despliegue a Kubernetes (CD). Esta separación sigue las mejores prácticas de la industria. ArgoCD además detecta cuando el estado del clúster difiere de lo definido en Git y lo corrige automáticamente, algo que Jenkins o CodePipeline no hacen de forma nativa. Jenkins se descartó por el alto costo de mantener un servidor dedicado.
 
 #### 7.i.6 IaC: ¿Por qué Terraform y no AWS CDK, Pulumi o CloudFormation?
 
@@ -1208,7 +1218,7 @@ flowchart LR
 | **Curva de aprendizaje** | ⭐⭐⭐⭐ (HCL) | ⭐⭐⭐⭐⭐ (TypeScript) | ⭐⭐⭐⭐ (Python) | ⭐⭐ (YAML/JSON) |
 | **Plan/Preview** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ (cdk diff) | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ (change set) |
 
-**Decisión:** Terraform por su portabilidad (si DSRPMart migra a multi-cloud), madurez del ecosistema de providers, y la claridad del `terraform plan` que permite revisión en PR antes de aplicar cambios en infraestructura. AWS CDK sería segunda opción para equipos TypeScript-first.
+**Decisión:** Terraform por su portabilidad (si DSRPMart decide usar más de un proveedor de nube en el futuro), la madurez de su ecosistema, y la claridad del comando `terraform plan` que permite revisar los cambios antes de aplicarlos en infraestructura real. AWS CDK sería segunda opción para equipos que prefieren programar en TypeScript.
 
 #### 7.i.7 Mapa de Decisiones del Stack (Diagrama Mermaid)
 
@@ -1250,7 +1260,7 @@ flowchart TD
 
 ## 8. Estrategia de Despliegue de Modelos
 
-> **Principio de negocio:** Un modelo de ML solo genera valor cuando está en producción y los usuarios interactúan con él. Sin embargo, un despliegue prematuro puede degradar la experiencia de compra y reducir la conversión. La estrategia Champion/Challenger protege los ingresos actuales (champion) mientras valida que el nuevo modelo (challenger) realmente mejore las ventas antes de exponerlo al 100% del tráfico. Cada fase tiene criterios de decisión en métricas de negocio: CTR, tasa de conversión y revenue por sesión.
+> **¿Por qué esta estrategia?** Un modelo de ML solo genera valor cuando los usuarios interactúan con él en producción. Pero si desplegamos un modelo nuevo que funciona peor que el actual, perdemos ventas. Por eso usamos una estrategia gradual: el modelo actual ("champion") sigue atendiendo a los usuarios mientras el modelo nuevo ("challenger") se prueba progresivamente. Solo cuando el challenger **demuestra con datos** que mejora las ventas, se promueve al 100%.
 
 ### 8.1 Estrategia: **Champion/Challenger + Shadow Mode → A/B Test**
 
@@ -1295,10 +1305,10 @@ flowchart TD
 
 Se utiliza la **misma estrategia para ambos modelos** porque:
 
-1. Ambos tienen componente batch (se puede hacer shadow sin costo de latencia)
-2. Ambos impactan métricas de negocio medibles (CTR, conversion, revenue)
-3. La infraestructura compartida (EKS + Redis + MLflow) soporta multi-version nativa
-4. Los A/B tests necesitan significancia estadística → requiere volumen de tráfico que DSRPMart tiene
+1. Ambos procesan datos por lotes, lo que permite probar el modelo nuevo sin afectar al usuario
+2. Ambos impactan métricas de negocio que podemos medir directamente (clicks, conversión, ingresos)
+3. La infraestructura compartida (EKS + Redis + MLflow) soporta múltiples versiones de forma nativa
+4. Los A/B tests requieren un volumen mínimo de tráfico para ser estadísticamente válidos, y DSRPMart tiene ese volumen
 
 ### 8.2 Diagrama de Proceso de Despliegue
 
@@ -1400,7 +1410,7 @@ flowchart TD
 
 ## 9. Pasos de Construcción, Actores y Colaboración
 
-> **Enfoque de ejecución:** El plan de construcción sigue un modelo incremental orientado a generar valor de negocio lo antes posible. Cada caso de uso se desarrolla en ~16 semanas con un Sprint 0 de *discovery* donde Product Owner y ML Lead definen los KPIs objetivo de ventas que justifican la inversión. El rollout con A/B test al final de cada plan garantiza que solo se promueven modelos que demuestren mejora medible en conversión o revenue.
+> **Plan de trabajo:** Construimos cada caso de uso en aproximadamente 16 semanas (4 meses), empezando con una semana de descubrimiento donde definimos con el área de producto qué métricas de ventas queremos mejorar. Al final del proceso, un A/B test compara el modelo nuevo contra el sistema actual para verificar que realmente mejora los resultados antes de activarlo para todos los usuarios.
 
 ### 9.1 Plan de Construcción – Caso 1: Productos Recomendados
 
@@ -1451,7 +1461,7 @@ flowchart TD
 
 ### 9.4 Modelo de Colaboración
 
-**Proceso de Trabajo — ML-Adapted Scrum**
+**Proceso de Trabajo — Scrum Adaptado para Machine Learning**
 
 **Cadencia:**
 
@@ -1477,14 +1487,16 @@ flowchart TD
 
 | Interacción | Mecanismo |
 |---|---|
-| DS ↔ MLOps | DS entrega notebook reproducible + MLflow experiment ID → MLOps convierte a KFP Pipeline + Airflow DAG + CI/CD |
-| DE ↔ ML | Contrato de datos: Great Expectations suite compartida · DE publica features en Feast offline store · ML consume vía Feast SDK (100% reproducible) |
-| Backend ↔ ML | API contract: OpenAPI spec (search, recommendations) · Redis key naming convention documentada · SLA: latencia p99, throughput, error budget |
-| Product ↔ ML | KPI definition doc (antes de cada modelo) · A/B test plan con sample size calculado · Go/No-Go decision meeting post A/B test |
+| DS ↔ MLOps | El Data Scientist entrega su código reproducible y el ID del experimento en MLflow → MLOps lo convierte en un pipeline automatizado con CI/CD |
+| DE ↔ ML | Los equipos comparten un contrato de datos formal: Data Engineering publica las features en Feast y ML las consume de forma reproducible |
+| Backend ↔ ML | Contrato de API documentado (formato OpenAPI) con acuerdos de rendimiento: latencia máxima, capacidad mínima, margen de error permitido |
+| Product ↔ ML | Antes de cada modelo se define un documento de KPIs. Después del A/B test hay una reunión de Go/No-Go para decidir si se promueve el modelo |
 
 ---
 
 ## 10. Diagramas de Arquitectura y Flujos de Proceso
+
+> Los siguientes 3 diagramas muestran cómo se conectan todos los componentes del sistema: desde que los datos entran hasta que el usuario ve las recomendaciones o resultados de búsqueda. Cada diagrama cubre una perspectiva diferente: el flujo de entrenamiento del modelo, la arquitectura completa en AWS, y el proceso de CI/CD (integración y despliegue continuo).
 
 ### 10.a End-to-End Entrenamiento de Modelo (Ambos Modelos)
 
@@ -1804,7 +1816,7 @@ flowchart TD
 
 ## 11. Monitoreo, Data Drift y Observabilidad
 
-> **Conexión con el negocio:** En una aplicación de ventas, un modelo de recomendación o búsqueda que se degrada silenciosamente impacta directamente los ingresos. Si el comportamiento de compra cambia (nuevas tendencias, estacionalidad, cambio de catálogo) y el modelo no se adapta, la conversión cae sin que el equipo lo detecte a tiempo. El monitoreo continuo de drift y métricas de negocio cierra el ciclo ML → revenue, asegurando que los modelos mantengan su impacto en ventas.
+> **¿Por qué monitorear?** En una aplicación de ventas, si un modelo se degrada (por ejemplo, porque cambian las tendencias de compra o llegan nuevos productos), la conversión baja sin que nadie lo note a tiempo. El monitoreo continuo detecta estos cambios automáticamente y puede disparar un reentrenamiento del modelo para que siempre esté actualizado.
 
 #### Diagrama Mermaid – Loop de Monitoreo y Reentrenamiento Automático
 
