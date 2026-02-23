@@ -21,7 +21,7 @@
    - 1.1 [Contexto de Negocio — DSRPMart](#11-contexto-de-negocio--dsrpmart)
    - 1.2 [¿Por Qué Machine Learning para una Aplicación de Ventas?](#12-por-qué-machine-learning-para-una-aplicación-de-ventas)
    - 1.3 [Propuesta de Solución](#13-propuesta-de-solución)
-2. [Matriz de Cumplimiento — Alcance de la Propuesta](#2-matriz-de-cumplimiento--alcance-de-la-propuesta)
+2. [Matriz de Cumplimiento de Requerimientos](#2-matriz-de-cumplimiento-de-requerimientos)
 3. [Nivel de Madurez MLOps](#3-nivel-de-madurez-mlops)
 4. [Caso 1 – Productos Recomendados](#4-caso-1--productos-recomendados)
 5. [Caso 2 – Motor de Búsqueda](#5-caso-2--motor-de-búsqueda)
@@ -87,20 +87,20 @@ Ambos casos comparten infraestructura, pipelines CI/CD y monitoring, maximizando
 
 ---
 
-## 2. Matriz de Cumplimiento — Alcance de la Propuesta
+## 2. Matriz de Cumplimiento de Requerimientos
 
-La siguiente tabla define el alcance de esta propuesta, mapeando cada componente crítico de la solución ML con la sección del documento que lo desarrolla. Esto permite evaluar la **completitud y viabilidad técnica** de la propuesta antes de su implementación.
+La siguiente tabla mapea cada requerimiento del proyecto con la sección del documento donde se desarrolla, asegurando **completitud y trazabilidad** para la evaluación.
 
-| # | Componente de la Propuesta | Sección(es) donde se desarrolla | Entregables concretos |
-|---|---|---|---|
-| **1** | Flujo E2E para cada caso de uso: algoritmos, fuentes de datos, optimizaciones, Model Card, Diccionario de Datos, Métricas de Negocio | §4 (Recomendaciones: §4.2–§4.6) y §5 (Búsqueda: §5.2–§5.6) | Diagrama E2E, tabla de algoritmos con justificación, Model Card completa, catálogo de fuentes, KPIs de negocio vinculados a ventas |
-| **2** | Tipo de Solución: batch, real-time o streaming con argumentación de negocio | §6 | Tabla comparativa por criterio, argumentación de descarte de alternativas, impacto en UX y costos |
-| **3** | Stack Tecnológico AWS cloud-native: version control, IaC, model management, orquestación, CI/CD, monitoring | §7 (§7.a–§7.h) + **§7.i Análisis Comparativo** | Tabla por categoría, código ejemplo, **6 matrices de decisión con alternativas evaluadas** |
-| **4** | Estrategia de despliegue con validación de impacto en ventas: shadow, A/B test, champion-challenger | §8 | Flujo 5 fases, criterios estadísticos, métricas de negocio como gate de promoción |
-| **5** | Plan de construcción: sprints, actores, colaboración entre equipos | §9 | Roadmap 16 sem/caso, organigrama 11 personas, modelo Scrum adaptado a ML |
-| **6** | Diagramas de arquitectura: E2E training, arquitectura AWS, CI/CD de despliegue | §10 (§10.a–§10.c) | 3 diagramas Mermaid detallados: Pipeline E2E, Arquitectura AWS completa, CI/CD GitOps |
+| # | Requerimiento del Proyecto | Dónde se resuelve | Qué se entrega |
+|:---:|---|---|---|
+| **1** | **Flujo E2E por caso de uso:** algoritmos, fuentes de datos, optimizaciones, Model Card, Diccionario de Datos, Métricas de Negocio | **Sección 4** — Productos Recomendados *(subsecciones 4.2 a 4.6)* y **Sección 5** — Motor de Búsqueda *(subsecciones 5.2 a 5.6)* | Diagrama E2E, tabla de algoritmos con justificación, Model Card completa, catálogo de fuentes, KPIs de negocio |
+| **2** | **Tipo de Solución:** batch, real-time o streaming con argumentación | **Sección 6** — Tipo de Solución | Tabla comparativa por criterio, argumentación de descarte de alternativas |
+| **3** | **Stack Tecnológico:** version control, cloud, IaC, model management, orquestación, librerías, CI/CD, métricas/monitoring, adicionales | **Sección 7** — Stack Tecnológico AWS *(subsecciones 7.a a 7.h)* + **Sección 7.i** — Análisis Comparativo | Tabla por categoría, config YAML, código Python, **matriz de decisión con alternativas evaluadas** |
+| **4** | **Estrategia de despliegue:** shadow, backtest, champion-challenger, A/B test con diagrama de proceso | **Sección 8** — Estrategia de Despliegue | Diagrama de 5 fases, flujo Champion/Challenger → Shadow → A/B, criterios estadísticos |
+| **5** | **Pasos de construcción:** desarrollos, actores/equipos, colaboración | **Sección 9** — Pasos de Construcción | Roadmap por Sprint (16 sem/caso), organigrama, modelo de colaboración Scrum adaptado |
+| **6** | **Diagramas de arquitectura:** E2E training, arquitectura de solución, CI/CD de despliegue de modelo | **Sección 10** — Diagramas de Arquitectura *(subsecciones 10.a a 10.c)* | 3 diagramas detallados: Pipeline E2E, Arquitectura AWS completa, CI/CD GitOps |
 
-> **Principio rector de la propuesta:** Cada decisión técnica está justificada por su impacto en las métricas de negocio de DSRPMart (conversión, revenue, retención). La tecnología es un medio, no un fin. La estructura del documento sigue el orden lógico: primero el POR QUÉ (contexto de negocio), luego el QUÉ (casos de uso) y finalmente el CÓMO (stack, CI/CD, deployment).
+> **Nota:** La estructura del documento sigue un orden lógico: primero el **POR QUÉ** (Sección 1 — contexto de negocio y justificación de ML), luego el **QUÉ** (Secciones 4 y 5 — casos de uso) y finalmente el **CÓMO** (Secciones 6–10 — stack, despliegue, arquitectura). Cada decisión técnica está respaldada por su impacto en las métricas de ventas de DSRPMart.
 
 ---
 
