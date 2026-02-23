@@ -59,7 +59,7 @@ La propuesta de incorporar ML/IA no es un ejercicio tecnológico sino una **nece
 | Problema de Negocio | Solución con ML/IA | Impacto Esperado en Ventas |
 |---|---|---|
 | Usuario no encuentra productos relevantes entre 500K SKUs | **Recomendaciones personalizadas** (Two-Tower NN + LambdaRank) que aprenden del comportamiento de cada usuario | +15-25% CTR en sección "Para Ti" → +8% Revenue per Session |
-| Búsqueda devuelve resultados irrelevantes o vacíos | **Motor de Búsqueda inteligente** (Sentence-BERT + LightGBM Ranking) con comprensión semántica | -60% zero-result rate → +10% Search Conversion |
+| Búsqueda devuelve resultados irrelevantes o vacíos | **Motor de Búsqueda inteligente** (Sentence-BERT + LightGBM Ranking) con comprensión semántica | -75% zero-result rate → +10% Search Conversion |
 | Recomendaciones estáticas ("más vendidos") para todos | Rankings personalizados actualizados 4x/día por usuario | +12% Tiempo en App → mayor engagement y retención |
 | Sin capacidad de medir impacto de cambios | **A/B Testing automatizado** con métricas de negocio (CTR, conversion, revenue) | Decisiones data-driven, no por intuición |
 | Modelos manuales que se degradan con el tiempo | **MLOps automatizado** con detección de drift y reentrenamiento continuo | Modelos siempre actualizados → revenue sostenido |
@@ -803,7 +803,7 @@ flowchart LR
 
 | Criterio | Análisis | Decisión |
 |---|---|---|
-| Frecuencia requerida | "Varias veces al día" → No necesita real-time sub-segundo | **Batch cada 4-6h** |
+| Frecuencia requerida | "Varias veces al día" → No necesita real-time sub-segundo | **Batch cada 6h (4 veces al día)** |
 | Volumen | ~10M usuarios × TOP-20 = 200M predicciones | Spark batch es más eficiente que real-time |
 | Latencia aceptable | Rankings pre-calculados servidos desde Redis (< 5ms) | Batch + cache cumple SLA |
 | Costo | Spot instances GPU para training, Spot CPU para inference → ~70% ahorro vs. on-demand | Batch optimiza costos |
@@ -811,7 +811,7 @@ flowchart LR
 
 **¿Por qué NO en tiempo real?**
 
-- Las recomendaciones no necesitan actualizarse al instante; cada 4-6 horas es suficiente para una buena experiencia
+- Las recomendaciones no necesitan actualizarse al instante; cada 6 horas es suficiente para una buena experiencia
 - Calcular recomendaciones en tiempo real por cada visita requiere servidores GPU costosos
 - El enfoque batch + cache da tiempos de respuesta de 5 milisegundos a una fracción del costo
 
@@ -835,7 +835,7 @@ El Motor de Búsqueda es naturalmente **híbrido**: la preparación de índices 
 
 ---
 
-## 7. Stack Tecnológico AWS Cloud-Native
+## 7. Stack Tecnológico AWS Cloud-Native y Justificación Comparativa
 
 > **Criterio de selección:** Cada herramienta fue elegida por su capacidad de **mejorar las ventas** de DSRPMart (más conversión, búsqueda más rápida, recomendaciones más frescas), no solo por méritos técnicos. Usamos **AWS como proveedor único** para simplificar la operación y aprovechar el ecosistema de datos más maduro del mercado, con la mayor base de profesionales certificados en Latinoamérica.
 
@@ -1148,7 +1148,7 @@ flowchart LR
 | **Ecosistema de datos** (20%) | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | Kinesis + Redshift + S3 + Glue + DMS = ecosistema más maduro para data pipelines |
 | **Talento disponible** (15%) | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ | AWS tiene la mayor base de profesionales certificados; más fácil reclutar |
 | **Costos Spot/Preemptible** (10%) | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | GCP Preemptible es más barato, pero AWS Spot tiene mejor disponibilidad y el ahorro total es similar |
-| **Multi-region/DR** (10%) | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | AWS tiene más regiones globales, importante para expansión de DSRPMart a Latam |
+| **Multi-region/DR** (10%) | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | AWS tiene más regiones globales, importante para expansión de DSRPMart en Latam |
 | **Score ponderado** | **4.55** | **4.20** | **3.80** | **→ AWS elegido** |
 
 **Decisión:** AWS gana por su ecosistema de datos maduro, la cantidad de profesionales certificados disponibles en Latam y su mayor presencia de data centers en la región. GCP sería la segunda opción por su fortaleza en Kubernetes y precios competitivos.
@@ -1507,7 +1507,7 @@ flowchart TD
     %% ── MWAA Scheduler ──────────────────────────────────────────────
     subgraph MWAA["☁️ Amazon MWAA — Managed Airflow"]
         direction LR
-        SCHED["<b>DAG Scheduler</b><br/>product_recommender: daily 00:00 UTC<br/>search_engine: daily 02:00 UTC"]
+        SCHED["<b>DAG Scheduler</b><br/>product_recommender_train: daily 00:00 UTC<br/>search_engine_train: daily 02:00 UTC<br/><i>(Batch inference: 4×/día en DAG separado)</i>"]
     end
 
     %% ── Data Ingestion & Validation ─────────────────────────────────
